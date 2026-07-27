@@ -1,6 +1,7 @@
 """Tests for aind_pophys_metadata.fields."""
 
 import unittest
+from pathlib import Path
 
 from aind_data_schema.components.configs import ImagingConfig, PlanarImage
 
@@ -111,6 +112,23 @@ class TestIdentifiers(unittest.TestCase):
     def test_instrument_missing(self):
         """Missing instrument id -> None."""
         self.assertIsNone(fields.get_instrument_id(io.SCHEMA_V2, {}))
+
+    def test_instrument_required_raises(self):
+        """required=True raises KeyError naming the field when missing."""
+        with self.assertRaises(KeyError) as ctx:
+            fields.get_instrument_id(
+                io.SCHEMA_V2, {}, required=True, file_path=Path("acq.json")
+            )
+        self.assertIn("instrument_id", str(ctx.exception))
+
+    def test_instrument_required_present(self):
+        """required=True returns the value when present."""
+        self.assertEqual(
+            fields.get_instrument_id(
+                io.SCHEMA_V1, {"rig_id": "MESO.1"}, required=True
+            ),
+            "MESO.1",
+        )
 
     def test_subject_canonical(self):
         """subject_id is read from the core dict first."""

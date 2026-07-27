@@ -10,6 +10,7 @@ The ``*_v1`` / ``*_v2`` functions are the per-version primitives; the
 :func:`aind_pophys_metadata.io.detect_schema_version`).
 """
 
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from aind_data_schema.components.configs import (
@@ -21,6 +22,7 @@ from aind_data_schema.components.configs import (
 from aind_pophys_metadata.io import (
     SCHEMA_V1,
     object_type_value,
+    require,
 )
 
 # v2 discriminator values, read from the schema classes (not hardcoded) so
@@ -135,7 +137,13 @@ def get_frame_rate(
 # ---------------------------------------------------------------------------
 
 
-def get_instrument_id(version: str, core_raw: dict) -> Optional[str]:
+def get_instrument_id(
+    version: str,
+    core_raw: dict,
+    *,
+    required: bool = False,
+    file_path: Optional[Path] = None,
+) -> Optional[str]:
     """Instrument/rig identifier (v1 ``rig_id`` / v2 ``instrument_id``).
 
     Parameters
@@ -144,14 +152,28 @@ def get_instrument_id(version: str, core_raw: dict) -> Optional[str]:
         Schema version string.
     core_raw : dict
         Raw core acquisition dict.
+    required : bool, optional
+        When ``True``, raise ``KeyError`` if the id is missing (via
+        :func:`aind_pophys_metadata.io.require`) instead of returning
+        ``None``. Capsules that cannot proceed without it pass ``True``.
+    file_path : Path, optional
+        Source file path used only for the ``required`` error message.
 
     Returns
     -------
     str or None
-        The instrument id, or ``None`` if absent.
+        The instrument id; ``None`` if absent and not ``required``.
+
+    Raises
+    ------
+    KeyError
+        If ``required`` and the id is missing.
     """
     key = "rig_id" if version == SCHEMA_V1 else "instrument_id"
-    value = core_raw.get(key)
+    if required:
+        value = require(core_raw, key, file_path or Path(key))
+    else:
+        value = core_raw.get(key)
     return None if value is None else str(value)
 
 
