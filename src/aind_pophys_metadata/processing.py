@@ -8,6 +8,7 @@ parameters, timings); this module assembles the ``Code`` / ``DataProcess`` /
 populated and the on-disk format matches other v2 artifacts).
 """
 
+import logging
 import os
 import platform as platform_mod
 from datetime import datetime as dt
@@ -23,7 +24,86 @@ from aind_data_schema.core.processing import (
 )
 from aind_data_schema_models.process_names import ProcessName
 
+logger = logging.getLogger(__name__)
+
 PROCESSING_JSON = "processing.json"
+
+# Pipeline identity is injected by the pipeline runtime (the pophys
+# pipeline's nextflow.config ``env`` block), never hardcoded in a capsule.
+# All three are expected whenever a capsule runs inside the pipeline.
+PIPELINE_NAME_ENV = "PIPELINE_NAME"
+PIPELINE_VERSION_ENV = "PIPELINE_VERSION"
+PIPELINE_URL_ENV = "PIPELINE_URL"
+
+
+def pipeline_name_from_env() -> Optional[str]:
+    """Return the running pipeline's name, or ``None`` outside a pipeline.
+
+    A plain read — completeness of the pipeline environment is validated by
+    :func:`pipeline_code`. Every write path calls both (``build_data_process``
+    then ``build_processing``), so a partial environment still fails loudly
+    before any document is written.
+
+    Returns
+    -------
+    str or None
+        The ``PIPELINE_NAME`` environment value, or ``None`` when unset
+        (a standalone capsule run).
+    """
+    return os.getenv(PIPELINE_NAME_ENV) or None
+
+
+def pipeline_code() -> Optional[Code]:
+    """Build the pipeline-level ``Code`` block from the environment.
+
+    The pipeline exports ``PIPELINE_NAME``, ``PIPELINE_URL`` and
+    ``PIPELINE_VERSION`` into every capsule, so all three are expected
+    whenever a capsule runs inside the pipeline. Any partial set is a
+    misconfigured pipeline and fails loudly — never a placeholder.
+
+    ``Processing`` validates that every ``DataProcess.pipeline_name``
+    resolves to an entry in ``Processing.pipelines``, so these two must be
+    populated together — both are derived from ``PIPELINE_NAME`` to keep
+    that invariant true by construction.
+
+    Returns
+    -------
+    Code or None
+        The pipeline code block, or ``None`` when none of the three are set
+        (a standalone capsule run outside the pipeline).
+
+    Raises
+    ------
+    ValueError
+        If only some of the three are set.
+    """
+    values = {
+        env: os.getenv(env)
+        for env in (
+            PIPELINE_NAME_ENV,
+            PIPELINE_URL_ENV,
+            PIPELINE_VERSION_ENV,
+        )
+    }
+    missing = [env for env, value in values.items() if not value]
+    if len(missing) == len(values):
+        logger.warning(
+            "None of %s are set; emitting processing.json without pipeline "
+            "linkage. Expected inside the pipeline, which exports all three.",
+            ", ".join(values),
+        )
+        return None
+    if missing:
+        raise ValueError(
+            f"Incomplete pipeline environment: {', '.join(missing)} "
+            f"missing. The pipeline must export {PIPELINE_NAME_ENV}, "
+            f"{PIPELINE_URL_ENV} and {PIPELINE_VERSION_ENV}."
+        )
+    return Code(
+        name=values[PIPELINE_NAME_ENV],
+        url=values[PIPELINE_URL_ENV],
+        version=values[PIPELINE_VERSION_ENV],
+    )
 
 
 def resource_usage() -> ResourceUsage:
@@ -127,13 +207,17 @@ def build_data_process(
     resources : ResourceUsage, optional
         Host resource usage (see :func:`resource_usage`).
     pipeline_name : str, optional
-        Name of the pipeline this process belongs to.
+        Name of the pipeline this process belongs to. Defaults to
+        ``PIPELINE_NAME`` from the environment, and is omitted entirely
+        outside a pipeline run (see :func:`pipeline_code`).
 
     Returns
     -------
     DataProcess
         The populated data process.
     """
+    if pipeline_name is None:
+        pipeline_name = pipeline_name_from_env()
     kwargs = dict(
         process_type=process_type,
         stage=stage,
@@ -170,7 +254,9 @@ def build_processing(
     data_processes : list of DataProcess
         The processes describing this run.
     pipelines : list of Code, optional
-        Pipeline-level code blocks.
+        Pipeline-level code blocks. Defaults to the pipeline described by
+        the ``PIPELINE_*`` environment variables, and stays ``None``
+        outside a pipeline run (see :func:`pipeline_code`).
     notes : str, optional
         Document-level notes.
 
@@ -179,6 +265,9 @@ def build_processing(
     Processing
         The assembled processing document.
     """
+    if pipelines is None:
+        code = pipeline_code()
+        pipelines = [code] if code is not None else None
     return Processing(
         data_processes=list(data_processes),
         pipelines=pipelines,
