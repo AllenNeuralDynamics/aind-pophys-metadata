@@ -172,6 +172,7 @@ def build_data_process(
     end_time: dt,
     *,
     name: Optional[str] = None,
+    plane_id: Optional[str] = None,
     stage: ProcessStage = ProcessStage.PROCESSING,
     experimenters: Optional[List[str]] = None,
     output_path: Optional[str] = None,
@@ -194,6 +195,12 @@ def build_data_process(
         Timezone-aware process end time.
     name : str, optional
         Human-readable process name.
+    plane_id : str, optional
+        Plane/FOV id of the plane this process ran on. Per-plane capsules
+        pass it so the name is unique once every plane's document is
+        merged; the name becomes ``"{plane_id}: {base}"``, where ``base``
+        is ``name`` when given and the ``process_type`` label otherwise.
+        Session-level capsules (one task per run) omit it.
     stage : ProcessStage, optional
         Processing stage; defaults to ``ProcessStage.PROCESSING``.
     experimenters : list of str, optional
@@ -218,6 +225,16 @@ def build_data_process(
     """
     if pipeline_name is None:
         pipeline_name = pipeline_name_from_env()
+    # ``DataProcess.name`` doubles as the ``Processing.dependency_graph``
+    # key, so aind-data-schema requires it unique across every process in
+    # one document ("data_processes must have unique names."). A per-plane
+    # capsule writes one document per plane, each deriving the same default
+    # name from ``process_type``, so the names collide the moment the
+    # aggregator merges them. Composing here rather than at each call site
+    # is what keeps the format identical across capsules.
+    if plane_id:
+        base = name or getattr(process_type, "value", process_type)
+        name = f"{plane_id}: {base}"
     kwargs = dict(
         process_type=process_type,
         stage=stage,

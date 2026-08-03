@@ -42,6 +42,28 @@ class TestQualityControl(unittest.TestCase):
         self.assertEqual(metric.tags["type"], "Operational QC")
         self.assertEqual(metric.reference, "plane_0/proj.png")
 
+    def test_dropdown_value_is_always_empty(self):
+        """A pending dropdown carries "" -- qcportal's pending contract."""
+        metric = self._metric()
+        self.assertEqual(metric.value.value, "")
+        self.assertEqual(metric.status_history[0].status, Status.PENDING)
+
+    def test_dropdown_metric_takes_no_preset_value(self):
+        """There is deliberately no parameter to preselect a value.
+
+        A preselected value on a PENDING metric renders as already
+        answered, so a reviewer treats it as done and never opens it --
+        and a preselection mapping to PASS silently auto-passes review.
+        """
+        with self.assertRaises(TypeError):
+            qc.dropdown_metric(
+                name="n",
+                evaluation="e",
+                options=["a"],
+                status=[Status.PASS],
+                value="a",
+            )
+
     def test_build_quality_control_grouping(self):
         """The wrapper sets the standard default grouping."""
         doc = qc.build_quality_control([self._metric()])

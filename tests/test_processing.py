@@ -10,6 +10,7 @@ from unittest.mock import patch
 from aind_data_schema.components.identifiers import Code
 from aind_data_schema.core.processing import Processing, ResourceUsage
 from aind_data_schema_models.process_names import ProcessName
+from pydantic import ValidationError
 
 from aind_pophys_metadata import processing
 
@@ -83,6 +84,66 @@ class TestProcessing(unittest.TestCase):
         self.assertEqual(dp.name, "step")
         self.assertEqual(dp.pipeline_name, "pipe")
         self.assertEqual(dp.notes, "ok")
+
+    def test_plane_id_qualifies_derived_name(self):
+        """plane_id prefixes the process-type label when name is omitted."""
+        dp = processing.build_data_process(
+            process_type=ProcessName.VIDEO_MOTION_CORRECTION,
+            code=self._code(),
+            start_time=_START,
+            end_time=_END,
+            plane_id="VISp_0",
+        )
+        self.assertEqual(dp.name, "VISp_0: Video motion correction")
+
+    def test_plane_id_qualifies_explicit_name(self):
+        """plane_id prefixes an explicit name instead of replacing it."""
+        dp = processing.build_data_process(
+            process_type=ProcessName.VIDEO_MOTION_CORRECTION,
+            code=self._code(),
+            start_time=_START,
+            end_time=_END,
+            name="Suite2P motion correction",
+            plane_id="VISl_3",
+        )
+        self.assertEqual(dp.name, "VISl_3: Suite2P motion correction")
+
+    def _plane_process(self, plane_id):
+        """Build one per-plane data process for the uniqueness tests."""
+        return processing.build_data_process(
+            process_type=ProcessName.VIDEO_ROI_TIMESERIES_EXTRACTION,
+            code=self._code(),
+            start_time=_START,
+            end_time=_END,
+            plane_id=plane_id,
+        )
+
+    def test_plane_ids_keep_merged_names_unique(self):
+        """A merged multi-plane document validates when plane_id is set.
+
+        ``DataProcess.name`` is the ``dependency_graph`` key, so the schema
+        requires it unique across every process in one document.
+        """
+        procs = [self._plane_process(p) for p in ("VISp_0", "VISp_1")]
+        doc = Processing(
+            data_processes=procs,
+            dependency_graph={p.name: [] for p in procs},
+        )
+        self.assertEqual(len(doc.dependency_graph), 2)
+
+    def test_without_plane_id_merged_names_collide(self):
+        """Omitting plane_id makes every plane derive the same name.
+
+        That collision is what breaks run-level aggregation, so pin both
+        halves of it: the names match, and the schema rejects the merge.
+        """
+        procs = [self._plane_process(None), self._plane_process(None)]
+        self.assertEqual(procs[0].name, procs[1].name)
+        with self.assertRaises(ValidationError):
+            Processing(
+                data_processes=procs,
+                dependency_graph={procs[0].name: []},
+            )
 
     def test_build_processing_and_write(self):
         """build_processing wraps processes; the writer emits a JSON file."""

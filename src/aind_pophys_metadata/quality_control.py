@@ -63,7 +63,6 @@ def dropdown_metric(
     *,
     reference: Optional[str] = None,
     description: str = "",
-    value: str = "",
     modality=Modality.POPHYS,
     stage: Stage = Stage.PROCESSING,
     metric_type: str = _OPERATIONAL_QC,
@@ -86,8 +85,6 @@ def dropdown_metric(
         Path to the reference image/artifact, relative to the asset.
     description : str, optional
         Reviewer-facing description of what to assess.
-    value : str, optional
-        Preselected dropdown value; empty string leaves it unset.
     modality : Modality, optional
         Data modality; defaults to ``Modality.POPHYS``.
     stage : Stage, optional
@@ -110,8 +107,15 @@ def dropdown_metric(
         description=description,
         status_history=[pending_qc_status(evaluator)],
         reference=reference,
+        # Always "". qcportal's contract is that a dropdown value is
+        # either "" (pending) or one of the options, and this builder
+        # always stamps a PENDING status_history. A preselected value on a
+        # pending metric renders as already answered, so a reviewer treats
+        # it as done and never opens it -- and when the preselection maps
+        # to Status.PASS it silently auto-passes the review. There is no
+        # valid combination to expose, so there is no parameter for it.
         value=DropdownMetric(
-            value=value,
+            value="",
             options=list(options),
             status=list(status),
         ),
