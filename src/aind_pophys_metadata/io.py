@@ -12,6 +12,7 @@ Shared, capsule-agnostic I/O for reading AIND metadata:
 """
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,6 +21,10 @@ SCHEMA_V2 = "v2"
 
 V1_CORE_FILE = "session.json"
 V2_CORE_FILE = "acquisition.json"
+
+PLATFORM_FILE = "platform.json"
+SUBJECT_FILE = "subject.json"
+DATA_DESCRIPTION_FILE = "data_description.json"
 
 
 def load_json(path: Path) -> dict:
@@ -144,6 +149,91 @@ def detect_schema_version(core_file: Path) -> str:
         :data:`SCHEMA_V1` for ``session.json``, else :data:`SCHEMA_V2`.
     """
     return SCHEMA_V1 if Path(core_file).name == V1_CORE_FILE else SCHEMA_V2
+
+
+@dataclass(frozen=True)
+class CommonMetadata:
+    """Raw dicts and version every capsule's metadata read starts from.
+
+    Deliberately *not* a base class for capsule metadata dataclasses. The
+    capsules consume anywhere from 3 to 21 fields, so each spreads this
+    result into its own dataclass rather than inheriting a shape that would
+    fit none of them. This carries only the shared preamble.
+
+    Attributes
+    ----------
+    core_path : Path
+        Path to the located ``session.json`` / ``acquisition.json``.
+    version : str
+        :data:`SCHEMA_V1` or :data:`SCHEMA_V2`, from
+        :func:`detect_schema_version`.
+    core_raw : dict
+        Raw core acquisition dict.
+    platform_raw : dict or None
+        Raw ``platform.json`` dict, or ``None`` when absent.
+    subject_raw : dict or None
+        Raw ``subject.json`` dict, or ``None`` when absent.
+    data_description_raw : dict or None
+        Raw ``data_description.json`` dict, or ``None`` when absent.
+    """
+
+    core_path: Path
+    version: str
+    core_raw: dict
+    platform_raw: Optional[dict] = None
+    subject_raw: Optional[dict] = None
+    data_description_raw: Optional[dict] = None
+
+
+def load_optional(input_dir: Path, name: str) -> Optional[dict]:
+    """Load a sibling metadata file if present, else return ``None``.
+
+    Parameters
+    ----------
+    input_dir : Path
+        Directory searched recursively.
+    name : str
+        Exact file name to load.
+
+    Returns
+    -------
+    dict or None
+        The parsed dict, or ``None`` when the file is absent.
+    """
+    path = find(input_dir, name)
+    return load_json(path) if path else None
+
+
+def load_common(input_dir: Path) -> CommonMetadata:
+    """Locate the core file, detect its version, and load common siblings.
+
+    Parameters
+    ----------
+    input_dir : Path
+        Directory searched recursively for the metadata files.
+
+    Returns
+    -------
+    CommonMetadata
+        The core path, schema version and the four raw dicts.
+
+    Raises
+    ------
+    ValueError
+        If both core files are present (see :func:`find_acquisition_file`).
+    FileNotFoundError
+        If neither core file is present.
+    """
+    input_dir = Path(input_dir)
+    core_path = find_acquisition_file(input_dir)
+    return CommonMetadata(
+        core_path=core_path,
+        version=detect_schema_version(core_path),
+        core_raw=load_json(core_path),
+        platform_raw=load_optional(input_dir, PLATFORM_FILE),
+        subject_raw=load_optional(input_dir, SUBJECT_FILE),
+        data_description_raw=load_optional(input_dir, DATA_DESCRIPTION_FILE),
+    )
 
 
 def object_type_value(cls) -> str:

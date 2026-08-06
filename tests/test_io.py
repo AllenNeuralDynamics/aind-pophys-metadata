@@ -94,5 +94,58 @@ class TestIo(unittest.TestCase):
         self.assertTrue(value)
 
 
+class TestLoadCommon(unittest.TestCase):
+    """The shared find-core-file / detect-version / load-siblings preamble."""
+
+    def setUp(self):
+        """Create a temp working directory."""
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _write(self, name: str, blob: dict) -> None:
+        """Write a metadata file into the temp directory."""
+        (self.root / name).write_text(json.dumps(blob))
+
+    def test_loads_v2_core_and_all_siblings(self):
+        """Every optional sibling present is loaded."""
+        self._write(io.V2_CORE_FILE, {"instrument_id": "MESO.1"})
+        self._write(io.PLATFORM_FILE, {"imaging_plane_groups": []})
+        self._write(io.SUBJECT_FILE, {"subject_id": "123"})
+        self._write(io.DATA_DESCRIPTION_FILE, {"name": "ds"})
+        common = io.load_common(self.root)
+        self.assertEqual(common.version, io.SCHEMA_V2)
+        self.assertEqual(common.core_path.name, io.V2_CORE_FILE)
+        self.assertEqual(common.core_raw["instrument_id"], "MESO.1")
+        self.assertEqual(common.subject_raw["subject_id"], "123")
+        self.assertEqual(common.data_description_raw["name"], "ds")
+        self.assertIsNotNone(common.platform_raw)
+
+    def test_absent_siblings_are_none(self):
+        """A v1 asset with no siblings still loads."""
+        self._write(io.V1_CORE_FILE, {"rig_id": "rig"})
+        common = io.load_common(self.root)
+        self.assertEqual(common.version, io.SCHEMA_V1)
+        self.assertIsNone(common.platform_raw)
+        self.assertIsNone(common.subject_raw)
+        self.assertIsNone(common.data_description_raw)
+
+    def test_result_is_frozen(self):
+        """The result is immutable; callers spread rather than mutate."""
+        self._write(io.V1_CORE_FILE, {})
+        common = io.load_common(self.root)
+        with self.assertRaises(Exception):
+            common.version = io.SCHEMA_V2
+
+    def test_missing_core_file_raises(self):
+        """An input directory with no core file fails loudly."""
+        with self.assertRaises(FileNotFoundError):
+            io.load_common(self.root)
+
+    def test_load_optional_absent(self):
+        """load_optional returns None when the file is not there."""
+        self.assertIsNone(io.load_optional(self.root, "nope.json"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,10 +1,12 @@
 """Tests for aind_pophys_metadata.fields."""
 
+import logging
 import unittest
 from pathlib import Path
 
 from aind_data_schema.components.configs import ImagingConfig, PlanarImage
 
+import aind_pophys_metadata
 from aind_pophys_metadata import fields, io
 
 _IMAGING = io.object_type_value(ImagingConfig)
@@ -246,6 +248,188 @@ class TestFovNaming(unittest.TestCase):
             planes=[{"plane_index": 0, "targeted_structure": "VISp"}]
         )
         self.assertEqual(fields.get_fov_ids(io.SCHEMA_V2, acq), ("plane_0",))
+
+
+class TestResolveFrameRate(unittest.TestCase):
+    """CLI-override-then-raise layer over get_frame_rate."""
+
+    def test_metadata_wins(self):
+        """A frame rate in the core file is used as-is."""
+        session = _v1_session(frame_rate=30.0)
+        self.assertEqual(
+            fields.resolve_frame_rate(io.SCHEMA_V1, session), 30.0
+        )
+
+    def test_cli_override_used_when_metadata_silent(self):
+        """The CLI override fills in and is announced."""
+        with self.assertLogs(fields.logger, level="WARNING"):
+            rate = fields.resolve_frame_rate(
+                io.SCHEMA_V1, _v1_session(), cli_override=11.0
+            )
+        self.assertEqual(rate, 11.0)
+
+    def test_platform_fallback(self):
+        """platform.json supplies the rate when the core file omits it."""
+        platform = {"imaging_plane_groups": [{"acquisition_framerate_Hz": 9}]}
+        self.assertEqual(
+            fields.resolve_frame_rate(io.SCHEMA_V1, _v1_session(), platform),
+            9.0,
+        )
+
+    def test_optional_miss_returns_none(self):
+        """required=False yields None instead of raising."""
+        self.assertIsNone(
+            fields.resolve_frame_rate(
+                io.SCHEMA_V1, _v1_session(), required=False
+            )
+        )
+
+    def test_required_miss_names_files_and_version(self):
+        """The error names the core file, platform.json and the version."""
+        with self.assertRaises(ValueError) as ctx:
+            fields.resolve_frame_rate(
+                io.SCHEMA_V2,
+                _v2_acquisition(),
+                core_file=Path("/data/acquisition.json"),
+                input_dir=Path("/data"),
+            )
+        message = str(ctx.exception)
+        self.assertIn("acquisition.json", message)
+        self.assertIn(io.PLATFORM_FILE, message)
+        self.assertIn(io.SCHEMA_V2, message)
+
+    def test_required_miss_without_paths_still_readable(self):
+        """Omitting the paths falls back to generic labels, not None."""
+        with self.assertRaises(ValueError) as ctx:
+            fields.resolve_frame_rate(io.SCHEMA_V1, _v1_session())
+        message = str(ctx.exception)
+        self.assertIn("the core file", message)
+        self.assertIn("the input directory", message)
+
+
+class TestAsInt(unittest.TestCase):
+    """Safe int coercion over raw metadata values."""
+
+    def test_coerces_int_float_and_string(self):
+        """Numeric shapes v1 and v2 both produce are accepted."""
+        self.assertEqual(fields._as_int(3), 3)
+        self.assertEqual(fields._as_int(3.7), 3)
+        self.assertEqual(fields._as_int("4"), 4)
+
+    def test_none_is_not_an_error(self):
+        """An explicit JSON null yields None rather than TypeError."""
+        self.assertIsNone(fields._as_int(None))
+
+    def test_uncoercible_warns_and_returns_none(self):
+        """A non-numeric value is reported and dropped."""
+        with self.assertLogs(fields.logger, level="WARNING"):
+            self.assertIsNone(fields._as_int("abc"))
+
+    def test_public_name_is_the_private_alias(self):
+        """as_int is the public spelling of the same helper."""
+        self.assertIs(fields.as_int, fields._as_int)
+        self.assertEqual(fields.as_int("4"), 4)
+
+    def test_exported_from_package(self):
+        """as_int is importable from the package root."""
+        self.assertIs(aind_pophys_metadata.as_int, fields.as_int)
+        self.assertIn("as_int", aind_pophys_metadata.__all__)
+
+
+class TestNullPlaneIndices(unittest.TestCase):
+    """An explicit null index must not crash FOV pairing."""
+
+    def test_v1_null_index_defaults_to_zero(self):
+        """A v1 FOV with index: null is treated as plane 0."""
+        session = _v1_session(
+            fovs=[{"index": None, "targeted_structure": "VISp"}]
+        )
+        self.assertEqual(fields.get_fov_pairs_v1(session), [(0, "VISp")])
+
+    def test_v2_null_plane_index_defaults_to_zero(self):
+        """A v2 plane with plane_index: null is treated as plane 0."""
+        acq = _v2_acquisition(
+            planes=[{"plane_index": None, "targeted_structure": "VISp"}]
+        )
+        self.assertEqual(fields.get_fov_pairs_v2(acq), [(0, "VISp")])
+
+
+class TestValidateScavengedIds(unittest.TestCase):
+    """Cross-check between directory-scavenged and canonical plane ids."""
+
+    def test_agreement_is_silent(self):
+        """Matching id sets return True."""
+        self.assertTrue(
+            fields.validate_scavenged_ids(
+                ["VISp_0", "VISp_1"], ("VISp_1", "VISp_0")
+            )
+        )
+
+    def test_divergence_warns_but_never_raises(self):
+        """A mismatch is reported once with both sets and returns False."""
+        with self.assertLogs(fields.logger, level="WARNING") as logs:
+            result = fields.validate_scavenged_ids(["plane_0"], ["VISp_0"])
+        self.assertFalse(result)
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("plane_0", logs.output[0])
+        self.assertIn("VISp_0", logs.output[0])
+
+    def test_custom_logger_is_used(self):
+        """A caller-supplied logger receives the warning."""
+        log = logging.getLogger("test_scavenged")
+        with self.assertLogs(log, level="WARNING"):
+            fields.validate_scavenged_ids(["a"], ["b"], log)
+
+    def test_single_mode_membership_hit_is_silent(self):
+        """A per-plane task's one id is fine among all canonical ids."""
+        with self.assertNoLogs(fields.logger, level="WARNING"):
+            self.assertTrue(
+                fields.validate_scavenged_ids(
+                    ["VISp_1"],
+                    ["VISp_0", "VISp_1", "VISp_2"],
+                    mode=fields.SCAVENGE_MODE_SINGLE,
+                )
+            )
+
+    def test_single_mode_membership_miss_warns(self):
+        """An id absent from the canonical set still warns, not raises."""
+        with self.assertLogs(fields.logger, level="WARNING") as logs:
+            result = fields.validate_scavenged_ids(
+                ["plane_9"],
+                ["VISp_0", "VISp_1"],
+                mode=fields.SCAVENGE_MODE_SINGLE,
+            )
+        self.assertFalse(result)
+        self.assertIn("plane_9", logs.output[0])
+        self.assertIn("VISp_0", logs.output[0])
+
+    def test_all_mode_equality_miss_warns(self):
+        """A partial scavenge still diverges under the default mode."""
+        with self.assertLogs(fields.logger, level="WARNING"):
+            self.assertFalse(
+                fields.validate_scavenged_ids(
+                    ["VISp_1"],
+                    ["VISp_0", "VISp_1"],
+                    mode=fields.SCAVENGE_MODE_ALL,
+                )
+            )
+
+    def test_empty_canonical_never_warns(self):
+        """An acquisition listing no planes offers nothing to disagree with."""
+        for mode in fields.SCAVENGE_MODES:
+            with self.subTest(mode=mode):
+                with self.assertNoLogs(fields.logger, level="WARNING"):
+                    self.assertTrue(
+                        fields.validate_scavenged_ids(
+                            ["plane_0"], [], mode=mode
+                        )
+                    )
+
+    def test_unknown_mode_is_a_caller_bug(self):
+        """A mistyped mode is rejected rather than silently defaulted."""
+        with self.assertRaises(ValueError) as ctx:
+            fields.validate_scavenged_ids(["a"], ["a"], mode="both")
+        self.assertIn("both", str(ctx.exception))
 
 
 if __name__ == "__main__":

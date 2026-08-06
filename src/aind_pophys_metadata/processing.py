@@ -8,12 +8,14 @@ parameters, timings); this module assembles the ``Code`` / ``DataProcess`` /
 populated and the on-disk format matches other v2 artifacts).
 """
 
+import importlib.metadata
 import logging
 import os
 import platform as platform_mod
+import re
 from datetime import datetime as dt
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from aind_data_schema.components.identifiers import Code, DataAsset
 from aind_data_schema.core.processing import (
@@ -23,10 +25,32 @@ from aind_data_schema.core.processing import (
     ResourceUsage,
 )
 from aind_data_schema_models.process_names import ProcessName
+from aind_data_schema_models.units import MemoryUnit
+
+from aind_pophys_metadata.io import load_json
 
 logger = logging.getLogger(__name__)
 
 PROCESSING_JSON = "processing.json"
+
+# Landing page for an AIND backing library. The sole source of ``Code.url``
+# (see :func:`build_code`), so url and version always name one artifact.
+LIBRARY_URL_TEMPLATE = "https://github.com/AllenNeuralDynamics/{name}"
+
+# Nextflow stages every task into a private scratch directory under
+# ``/tmp/nxf.<random>``. Those paths are deleted when the task ends, so they
+# are meaningless in a permanent metadata document.
+EPHEMERAL_PATH_MARKER = "/tmp/nxf."
+_EPHEMERAL_PATH_RE = re.compile(r"^/tmp/nxf\.")
+
+# Sources for the container's memory limit: cgroup v2 first, then v1.
+CGROUP_MEMORY_LIMIT_FILES = (
+    "/sys/fs/cgroup/memory.max",
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+)
+CPU_INFO_FILE = "/proc/cpuinfo"
+CPU_MODEL_KEY = "model name"
+UNKNOWN = "unknown"
 
 # Pipeline identity is injected by the pipeline runtime (the pophys
 # pipeline's nextflow.config ``env`` block), never hardcoded in a capsule.
@@ -121,25 +145,187 @@ def resource_usage() -> ResourceUsage:
     )
 
 
+def _cpu_model() -> Optional[str]:
+    """Return the CPU model string from ``/proc/cpuinfo``, or ``None``.
+
+    Returns
+    -------
+    str or None
+        The first ``model name`` value, or ``None`` when the file is absent
+        or unreadable (notably on macOS, where there is no procfs).
+    """
+    try:
+        with open(CPU_INFO_FILE) as handle:
+            for line in handle:
+                key, _, value = line.partition(":")
+                if key.strip() == CPU_MODEL_KEY and value.strip():
+                    return value.strip()
+    except OSError:
+        logger.debug("Could not read %s", CPU_INFO_FILE)
+    return None
+
+
+def _cgroup_memory_bytes() -> Optional[float]:
+    """Return the container's memory limit in bytes, or ``None``.
+
+    Reads the cgroup limit rather than the host's total memory, so the value
+    describes what the task was actually allowed to use. An unlimited cgroup
+    reports ``"max"`` and yields ``None``.
+
+    Returns
+    -------
+    float or None
+        The limit in bytes, or ``None`` when no cgroup file is readable or
+        the limit is unbounded.
+    """
+    for path in CGROUP_MEMORY_LIMIT_FILES:
+        try:
+            with open(path) as handle:
+                return float(handle.read().strip())
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def collect_static_resources() -> ResourceUsage:
+    """Return a ``ResourceUsage`` of what is truthfully known at startup.
+
+    Only cheap, immediately available facts are recorded: OS, architecture,
+    logical core count, CPU model and the container's memory limit. Nothing
+    is sampled over time, so every ``*_usage`` field stays ``None`` rather
+    than carrying a single misleading instantaneous reading.
+
+    Each individual read is guarded independently — a host that exposes no
+    procfs or no cgroup leaves that one field ``None`` instead of failing a
+    job over a metadata nicety.
+
+    Returns
+    -------
+    ResourceUsage
+        The populated static resource description.
+    """
+    memory_bytes = _cgroup_memory_bytes()
+    memory_unit = MemoryUnit.B if memory_bytes is not None else None
+    return ResourceUsage(
+        os=platform_mod.system() or UNKNOWN,
+        architecture=platform_mod.machine() or UNKNOWN,
+        cpu=_cpu_model(),
+        cpu_cores=os.cpu_count(),
+        system_memory=memory_bytes,
+        system_memory_unit=memory_unit,
+        ram=memory_bytes,
+        ram_unit=memory_unit,
+    )
+
+
+def reject_ephemeral_paths(value: Any, key: str = "") -> None:
+    """Raise if ``value`` contains a Nextflow task scratch path.
+
+    Nextflow stages each task under ``/tmp/nxf.<random>``, a directory that
+    is destroyed the moment the task ends. Recording one in ``processing.json``
+    produces a document that points at nothing — worse than omitting the
+    field, because it reads as real provenance. Containers are walked
+    recursively so a path nested inside a parameter dict is caught too.
+
+    Parameters
+    ----------
+    value : Any
+        Value to scan; dicts, lists and tuples are walked recursively and
+        anything that is not a string is ignored.
+    key : str, optional
+        Dotted key path of ``value``, used only to name the offender in the
+        error message.
+
+    Raises
+    ------
+    ValueError
+        If any string within ``value`` is a Nextflow task scratch path.
+    """
+    if isinstance(value, dict):
+        for sub_key, sub_value in value.items():
+            child = f"{key}.{sub_key}" if key else str(sub_key)
+            reject_ephemeral_paths(sub_value, child)
+        return
+    if isinstance(value, (list, tuple)):
+        for index, sub_value in enumerate(value):
+            reject_ephemeral_paths(sub_value, f"{key}[{index}]")
+        return
+    if not isinstance(value, str):
+        return
+    if _EPHEMERAL_PATH_RE.match(value) or EPHEMERAL_PATH_MARKER in value:
+        raise ValueError(
+            f"Ephemeral Nextflow work path in '{key or 'value'}': {value!r}. "
+            "Task scratch directories do not survive the task and must not "
+            "be written into permanent metadata; record a path relative to "
+            "the results root instead."
+        )
+
+
+def library_version(library_name: str) -> str:
+    """Return the installed backing library's released version.
+
+    The version of the backing library is the authoritative identity of the
+    code that ran: those versions bump automatically when each package
+    merges to main through the shared org CI/CD workflow, so they name a
+    released artifact. A capsule wrapper's ``VERSION`` does not.
+
+    An unresolvable version is never fatal - losing a completed processing
+    run over a metadata string is the wrong trade - so it warns and yields
+    an empty string.
+
+    Parameters
+    ----------
+    library_name : str
+        Distribution name of the backing library (e.g.
+        ``"aind-ophys-dff-library"``).
+
+    Returns
+    -------
+    str
+        The installed version, or ``""`` when the distribution is not
+        installed.
+    """
+    try:
+        return importlib.metadata.version(library_name)
+    except importlib.metadata.PackageNotFoundError:
+        logger.warning(
+            "Backing library %s is not installed; emitting Code without a "
+            "version. Provenance for this step will not identify the exact "
+            "artifact.",
+            library_name,
+        )
+        return ""
+
+
 def build_code(
-    url: str,
     name: str,
-    version: str,
     *,
+    library_name: str,
     parameters: Optional[dict] = None,
     input_data: Optional[List[str]] = None,
     language_version: Optional[str] = None,
 ) -> Code:
-    """Construct a v2 ``Code`` block for a process or pipeline.
+    """Construct a v2 ``Code`` block for a process.
+
+    Both ``url`` and ``version`` are derived from ``library_name`` and from
+    nothing else. ``version`` is the installed backing library's released
+    version (see :func:`library_version`); ``url`` is that library's landing
+    page. Neither a caller-supplied version nor the capsule wrapper's
+    ``VERSION`` environment variable is consulted: url and version must
+    always describe the same artifact, and the released library version is
+    the one that identifies production pipeline code.
+
+    An unresolvable version is never fatal; the document is still written
+    with an empty version and the library url, which remains correct.
 
     Parameters
     ----------
-    url : str
-        Source-code URL for the capsule/pipeline.
     name : str
         Human-readable code name.
-    version : str
-        Code/library version string.
+    library_name : str
+        Distribution name of the backing library (e.g.
+        ``"aind-ophys-dff-library"``). Required: it is the sole source of
+        both the url and the version.
     parameters : dict, optional
         Run parameters recorded on the code block.
     input_data : list of str, optional
@@ -151,9 +337,18 @@ def build_code(
     -------
     Code
         The populated code block.
+
+    Raises
+    ------
+    ValueError
+        If ``parameters`` or ``input_data`` carry a Nextflow task scratch
+        path (see :func:`reject_ephemeral_paths`).
     """
+    reject_ephemeral_paths(parameters or {}, "parameters")
+    reject_ephemeral_paths(list(input_data or []), "input_data")
+    version = library_version(library_name)
     return Code(
-        url=url,
+        url=LIBRARY_URL_TEMPLATE.format(name=library_name),
         name=name,
         version=version,
         language="Python",
@@ -222,7 +417,17 @@ def build_data_process(
     -------
     DataProcess
         The populated data process.
+
+    Raises
+    ------
+    ValueError
+        If ``output_path`` is a Nextflow task scratch path (see
+        :func:`reject_ephemeral_paths`).
     """
+    # ``output_path`` leaks the same task scratch directory as a parameter
+    # would; coerced first so a Path argument is scanned, not skipped.
+    if output_path is not None:
+        reject_ephemeral_paths(str(output_path), "output_path")
     if pipeline_name is None:
         pipeline_name = pipeline_name_from_env()
     # ``DataProcess.name`` doubles as the ``Processing.dependency_graph``
@@ -258,11 +463,85 @@ def build_data_process(
     return DataProcess(**kwargs)
 
 
+def collect_upstream_process_names(
+    input_dir: Path,
+    *,
+    exclude: Optional[str] = None,
+) -> List[str]:
+    """Collect every upstream ``DataProcess`` name under ``input_dir``.
+
+    Every ``processing.json`` staged into this task is read and *all* of its
+    process names are collected as flat siblings. No ordering is inferred and
+    no attempt is made to tell a parent from a grandparent: if two upstream
+    documents both landed in this task's inputs, they are equally upstream,
+    and guessing a depth from file layout would encode a fiction the input
+    tree cannot support.
+
+    Unreadable or invalid documents are skipped with a warning — a malformed
+    upstream artifact must not cost a completed run.
+
+    Parameters
+    ----------
+    input_dir : Path
+        Directory searched recursively for ``processing.json`` files.
+    exclude : str, optional
+        This process's own name, dropped from the result so a step can never
+        become its own dependency.
+
+    Returns
+    -------
+    list of str
+        Deduplicated upstream process names in first-seen order.
+    """
+    names: List[str] = []
+    for path in sorted(Path(input_dir).rglob(PROCESSING_JSON)):
+        try:
+            blob = load_json(path)
+            processes = blob.get("data_processes") or []
+        except (OSError, ValueError, AttributeError) as exc:
+            logger.warning("Skipping unreadable %s: %s", path, exc)
+            continue
+        for process in processes:
+            name = (process or {}).get("name")
+            if name and name != exclude and name not in names:
+                names.append(name)
+    return names
+
+
+def build_dependency_graph(
+    process_name: str,
+    upstream_names: Optional[List[str]] = None,
+) -> Dict[str, List[str]]:
+    """Build a single-node ``dependency_graph`` for one process.
+
+    ``Processing`` validates that the graph's *keys* exactly match its
+    ``data_processes`` names, so a capsule writing one process contributes
+    exactly one key. The upstream names appear only as values and are left
+    unvalidated by the schema, which is what lets a per-capsule document
+    name processes that live in a different document.
+
+    Parameters
+    ----------
+    process_name : str
+        This process's ``DataProcess.name``.
+    upstream_names : list of str, optional
+        Upstream process names (see
+        :func:`collect_upstream_process_names`).
+
+    Returns
+    -------
+    dict of str to list of str
+        Mapping of ``process_name`` to its upstream names.
+    """
+    return {process_name: list(upstream_names or [])}
+
+
 def build_processing(
     data_processes: List[DataProcess],
     *,
     pipelines: Optional[List[Code]] = None,
     notes: Optional[str] = None,
+    dependency_graph: Optional[Dict[str, List[str]]] = None,
 ) -> Processing:
     """Wrap data processes into a full v2 ``Processing`` document.
 
@@ -276,6 +555,9 @@ def build_processing(
         outside a pipeline run (see :func:`pipeline_code`).
     notes : str, optional
         Document-level notes.
+    dependency_graph : dict of str to list of str, optional
+        Upstream dependencies keyed by process name (see
+        :func:`build_dependency_graph`). Omitted when ``None``.
 
     Returns
     -------
@@ -289,6 +571,7 @@ def build_processing(
         data_processes=list(data_processes),
         pipelines=pipelines,
         notes=notes,
+        dependency_graph=dependency_graph,
     )
 
 

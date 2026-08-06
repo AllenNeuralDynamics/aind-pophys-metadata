@@ -1,18 +1,25 @@
 """Tests for aind_pophys_metadata.processing."""
 
+import importlib.metadata
+import json
 import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 from aind_data_schema.components.identifiers import Code
 from aind_data_schema.core.processing import Processing, ResourceUsage
 from aind_data_schema_models.process_names import ProcessName
+from aind_data_schema_models.units import MemoryUnit
 from pydantic import ValidationError
 
 from aind_pophys_metadata import processing
+
+# An installed distribution, so the version resolver has something real
+# to find; the library under test is always installed in its own test run.
+_INSTALLED_LIBRARY = "aind-pophys-metadata"
 
 _START = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
 _END = datetime(2024, 1, 1, 12, 30, tzinfo=timezone.utc)
@@ -24,9 +31,7 @@ class TestProcessing(unittest.TestCase):
     def _code(self) -> Code:
         """Build a minimal Code block for reuse."""
         return processing.build_code(
-            url="https://example.com/repo",
-            name="Example",
-            version="0.0.1",
+            name="Example", library_name=_INSTALLED_LIBRARY
         )
 
     def test_resource_usage(self):
@@ -45,9 +50,8 @@ class TestProcessing(unittest.TestCase):
     def test_build_code_with_input_data(self):
         """input_data names are wrapped and language_version is honored."""
         code = processing.build_code(
-            url="u",
             name="n",
-            version="v",
+            library_name=_INSTALLED_LIBRARY,
             parameters={"a": 1},
             input_data=["asset_a", "asset_b"],
             language_version="3.10.0",
@@ -183,9 +187,7 @@ class TestPipelineIdentity(unittest.TestCase):
     def _code(self) -> Code:
         """Build a minimal Code block for reuse."""
         return processing.build_code(
-            url="https://example.com/repo",
-            name="Example",
-            version="0.0.1",
+            name="Example", library_name=_INSTALLED_LIBRARY
         )
 
     def _data_process(self) -> object:
@@ -284,6 +286,311 @@ class TestPipelineIdentity(unittest.TestCase):
             pipeline_name="explicit",
         )
         self.assertEqual(dp.pipeline_name, "explicit")
+
+
+class TestBuildCodeHardening(unittest.TestCase):
+    """Library-authoritative url/version and the ephemeral-path guard."""
+
+    def test_version_comes_from_the_installed_library(self):
+        """code.version is the backing library's released version."""
+        code = processing.build_code(
+            name="n", library_name=_INSTALLED_LIBRARY
+        )
+        self.assertEqual(
+            code.version,
+            importlib.metadata.version(_INSTALLED_LIBRARY),
+        )
+
+    def test_url_is_the_library_landing_page(self):
+        """code.url names the library, so url and version agree."""
+        code = processing.build_code(
+            name="n", library_name=_INSTALLED_LIBRARY
+        )
+        self.assertEqual(
+            code.url,
+            processing.LIBRARY_URL_TEMPLATE.format(name=_INSTALLED_LIBRARY),
+        )
+
+    def test_version_environment_variable_is_ignored(self):
+        """A capsule wrapper's VERSION never reaches the document."""
+        with patch.dict(os.environ, {"VERSION": "9.9.9"}):
+            code = processing.build_code(
+                name="n", library_name=_INSTALLED_LIBRARY
+            )
+        self.assertNotEqual(code.version, "9.9.9")
+
+    def test_missing_package_warns_and_never_raises(self):
+        """An uninstalled library yields an empty version, not an error."""
+        with self.assertLogs(processing.logger, level="WARNING") as logs:
+            code = processing.build_code(
+                name="n", library_name="not-a-real-distribution"
+            )
+        self.assertEqual(code.version, "")
+        # The url stays correct even when the version is unknowable.
+        self.assertEqual(
+            code.url,
+            processing.LIBRARY_URL_TEMPLATE.format(
+                name="not-a-real-distribution"
+            ),
+        )
+        self.assertTrue(
+            any("not-a-real-distribution" in m for m in logs.output)
+        )
+
+    def test_library_name_is_required(self):
+        """Omitting library_name fails loudly at the call, not silently."""
+        with self.assertRaises(TypeError):
+            processing.build_code(name="n")
+
+    def test_retired_arguments_are_rejected(self):
+        """A stale url=/version= call site raises rather than misleading."""
+        for stale in ({"url": "https://example.com/capsule"},
+                      {"version": "1.2.3"}):
+            with self.subTest(stale=stale):
+                with self.assertRaises(TypeError):
+                    processing.build_code(
+                        name="n",
+                        library_name=_INSTALLED_LIBRARY,
+                        **stale,
+                    )
+
+    def test_ephemeral_path_in_parameters_raises(self):
+        """A Nextflow scratch path in parameters is rejected by key."""
+        with self.assertRaises(ValueError) as ctx:
+            processing.build_code(
+                name="n",
+                library_name=_INSTALLED_LIBRARY,
+                parameters={"movie": "/tmp/nxf.AbCd/movie.h5"},
+            )
+        self.assertIn("parameters.movie", str(ctx.exception))
+
+    def test_ephemeral_path_in_input_data_raises(self):
+        """A Nextflow scratch path in input_data is rejected by index."""
+        with self.assertRaises(ValueError) as ctx:
+            processing.build_code(
+                name="n",
+                library_name=_INSTALLED_LIBRARY,
+                input_data=["ok", "/tmp/nxf.9/x"],
+            )
+        self.assertIn("input_data[1]", str(ctx.exception))
+
+
+class TestLibraryVersion(unittest.TestCase):
+    """The standalone backing-library version resolver."""
+
+    def test_installed_distribution_resolves(self):
+        """An installed distribution reports its own version."""
+        self.assertEqual(
+            processing.library_version(_INSTALLED_LIBRARY),
+            importlib.metadata.version(_INSTALLED_LIBRARY),
+        )
+
+    def test_missing_distribution_returns_empty_and_warns(self):
+        """An absent distribution warns once and yields an empty string."""
+        with self.assertLogs(processing.logger, level="WARNING") as logs:
+            self.assertEqual(processing.library_version("nope-not-real"), "")
+        self.assertEqual(len(logs.output), 1)
+
+    def test_ephemeral_output_path_raises(self):
+        """A Nextflow scratch path in output_path is rejected too."""
+        with self.assertRaises(ValueError) as ctx:
+            processing.build_data_process(
+                process_type=ProcessName.OTHER,
+                code=processing.build_code(
+                    name="n", library_name=_INSTALLED_LIBRARY
+                ),
+                start_time=_START,
+                end_time=_END,
+                output_path="/tmp/nxf.AbCd/work/plane_0",
+            )
+        self.assertIn("output_path", str(ctx.exception))
+
+    def test_ephemeral_output_path_as_path_object_raises(self):
+        """A Path-valued output_path is coerced before the scan."""
+        with self.assertRaises(ValueError):
+            processing.build_data_process(
+                process_type=ProcessName.OTHER,
+                code=processing.build_code(
+                    name="n", library_name=_INSTALLED_LIBRARY
+                ),
+                start_time=_START,
+                end_time=_END,
+                output_path=Path("/tmp/nxf.AbCd/work"),
+            )
+
+
+class TestRejectEphemeralPaths(unittest.TestCase):
+    """The standalone ephemeral-path guard."""
+
+    def test_nested_containers_are_walked(self):
+        """A path nested in a dict inside a list is still caught."""
+        with self.assertRaises(ValueError) as ctx:
+            processing.reject_ephemeral_paths(
+                {"a": [{"b": "/tmp/nxf.zz/f"}]}, "root"
+            )
+        self.assertIn("root.a[0].b", str(ctx.exception))
+
+    def test_embedded_marker_is_caught(self):
+        """A scratch path that is not at the start of the string is caught."""
+        with self.assertRaises(ValueError):
+            processing.reject_ephemeral_paths("file:///tmp/nxf.q/f")
+
+    def test_unnamed_offender_reads_as_value(self):
+        """With no key, the message falls back to a generic label."""
+        with self.assertRaises(ValueError) as ctx:
+            processing.reject_ephemeral_paths("/tmp/nxf.q/f")
+        self.assertIn("'value'", str(ctx.exception))
+
+    def test_clean_values_pass(self):
+        """Non-strings and ordinary paths are accepted."""
+        processing.reject_ephemeral_paths(
+            {"n": 1, "p": "/results/plane_0", "t": (None, 2.5)}
+        )
+
+
+class TestStaticResources(unittest.TestCase):
+    """Static resource capture and its per-field guards."""
+
+    def test_collect_static_resources_always_populated(self):
+        """OS and architecture are always present; usage stays unsampled."""
+        ru = processing.collect_static_resources()
+        self.assertTrue(ru.os)
+        self.assertTrue(ru.architecture)
+        self.assertIsNone(ru.cpu_usage)
+        self.assertIsNone(ru.ram_usage)
+        self.assertIsNone(ru.gpu_usage)
+
+    def test_cpu_model_read_from_cpuinfo(self):
+        """The first model-name line is returned."""
+        content = "processor\t: 0\nmodel name\t: Fake CPU X1\n"
+        with patch("builtins.open", mock_open(read_data=content)):
+            self.assertEqual(processing._cpu_model(), "Fake CPU X1")
+
+    def test_cpu_model_absent_key_returns_none(self):
+        """A cpuinfo without a model name yields None."""
+        with patch("builtins.open", mock_open(read_data="processor\t: 0\n")):
+            self.assertIsNone(processing._cpu_model())
+
+    def test_cpu_model_unreadable_returns_none(self):
+        """An unreadable procfs leaves the field None, never raising."""
+        with patch("builtins.open", side_effect=OSError("no procfs")):
+            self.assertIsNone(processing._cpu_model())
+
+    def test_cgroup_memory_read(self):
+        """A numeric cgroup limit is returned in bytes."""
+        with patch("builtins.open", mock_open(read_data="2147483648\n")):
+            self.assertEqual(processing._cgroup_memory_bytes(), 2147483648.0)
+
+    def test_cgroup_memory_unbounded_returns_none(self):
+        """An unlimited ('max') or unreadable cgroup yields None."""
+        with patch("builtins.open", mock_open(read_data="max\n")):
+            self.assertIsNone(processing._cgroup_memory_bytes())
+
+    def test_memory_units_paired_with_values(self):
+        """The memory unit is set exactly when a limit was readable."""
+        with patch.object(
+            processing, "_cgroup_memory_bytes", return_value=1024.0
+        ):
+            ru = processing.collect_static_resources()
+        self.assertEqual(ru.system_memory, 1024.0)
+        self.assertEqual(ru.ram_unit, MemoryUnit.B)
+        with patch.object(
+            processing, "_cgroup_memory_bytes", return_value=None
+        ):
+            ru = processing.collect_static_resources()
+        self.assertIsNone(ru.system_memory_unit)
+
+
+class TestDependencyGraph(unittest.TestCase):
+    """Upstream-name collection and dependency-graph emission."""
+
+    def _write_doc(self, directory: Path, name: str, *names: str) -> None:
+        """Write a minimal processing.json carrying the given names."""
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / processing.PROCESSING_JSON).write_text(
+            json.dumps(
+                {"data_processes": [{"name": n} for n in (name, *names)]}
+            )
+        )
+
+    def test_collects_all_names_as_flat_siblings(self):
+        """Every name in every document is collected, deduplicated."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_doc(root / "a", "Motion correction", "Shared")
+            self._write_doc(root / "b", "Extraction", "Shared")
+            names = processing.collect_upstream_process_names(root)
+        self.assertEqual(
+            sorted(names), ["Extraction", "Motion correction", "Shared"]
+        )
+
+    def test_excludes_own_name(self):
+        """A step never becomes its own dependency."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_doc(root / "a", "Mine", "Theirs")
+            names = processing.collect_upstream_process_names(
+                root, exclude="Mine"
+            )
+        self.assertEqual(names, ["Theirs"])
+
+    def test_unreadable_document_is_skipped_with_warning(self):
+        """Invalid JSON does not cost the run its metadata."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bad").mkdir()
+            (root / "bad" / processing.PROCESSING_JSON).write_text("{oops")
+            self._write_doc(root / "good", "Good")
+            with self.assertLogs(processing.logger, level="WARNING"):
+                names = processing.collect_upstream_process_names(root)
+        self.assertEqual(names, ["Good"])
+
+    def test_non_object_document_is_skipped(self):
+        """A JSON list where an object was expected is skipped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / processing.PROCESSING_JSON).write_text("[]")
+            with self.assertLogs(processing.logger, level="WARNING"):
+                self.assertEqual(
+                    processing.collect_upstream_process_names(root), []
+                )
+
+    def test_unnamed_process_is_ignored(self):
+        """A process entry without a name contributes nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / processing.PROCESSING_JSON).write_text(
+                json.dumps({"data_processes": [{}, None]})
+            )
+            self.assertEqual(
+                processing.collect_upstream_process_names(root), []
+            )
+
+    def test_build_dependency_graph(self):
+        """The graph is a single key mapping to the upstream names."""
+        self.assertEqual(
+            processing.build_dependency_graph("Mine", ["A", "B"]),
+            {"Mine": ["A", "B"]},
+        )
+        self.assertEqual(
+            processing.build_dependency_graph("Mine"), {"Mine": []}
+        )
+
+    def test_build_processing_emits_graph(self):
+        """build_processing round-trips a dependency graph."""
+        dp = processing.build_data_process(
+            process_type=ProcessName.VIDEO_MOTION_CORRECTION,
+            code=processing.build_code(
+                name="n", library_name=_INSTALLED_LIBRARY
+            ),
+            start_time=_START,
+            end_time=_END,
+            name="Mine",
+        )
+        doc = processing.build_processing(
+            [dp], dependency_graph={"Mine": ["Upstream"]}
+        )
+        self.assertEqual(doc.dependency_graph, {"Mine": ["Upstream"]})
 
 
 if __name__ == "__main__":

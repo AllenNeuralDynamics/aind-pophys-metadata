@@ -10,8 +10,9 @@ The ``*_v1`` / ``*_v2`` functions are the per-version primitives; the
 :func:`aind_pophys_metadata.io.detect_schema_version`).
 """
 
+import logging
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 from aind_data_schema.components.configs import (
     ImagingConfig,
@@ -20,10 +21,13 @@ from aind_data_schema.components.configs import (
 )
 
 from aind_pophys_metadata.io import (
+    PLATFORM_FILE,
     SCHEMA_V1,
     object_type_value,
     require,
 )
+
+logger = logging.getLogger(__name__)
 
 # v2 discriminator values, read from the schema classes (not hardcoded) so
 # they track the installed aind-data-schema version.
@@ -32,6 +36,11 @@ _V2_PLANAR_IMAGE_TYPES = {
     object_type_value(PlanarImage),
     object_type_value(PlanarImageStack),
 }
+
+# Comparison modes for :func:`validate_scavenged_ids`.
+SCAVENGE_MODE_ALL = "all"
+SCAVENGE_MODE_SINGLE = "single"
+SCAVENGE_MODES = (SCAVENGE_MODE_ALL, SCAVENGE_MODE_SINGLE)
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +141,67 @@ def get_frame_rate(
     return rate
 
 
+def resolve_frame_rate(
+    version: str,
+    core_raw: dict,
+    platform_raw: Optional[dict] = None,
+    *,
+    core_file: Optional[Path] = None,
+    input_dir: Optional[Path] = None,
+    cli_override: Optional[float] = None,
+    required: bool = True,
+) -> Optional[float]:
+    """Frame rate from metadata, then a CLI override, then raise.
+
+    Wraps :func:`get_frame_rate` with the fallback layer every consuming
+    capsule needs, so the failure message is identical across the fleet
+    instead of being reinvented per repo.
+
+    Parameters
+    ----------
+    version : str
+        Schema version string.
+    core_raw : dict
+        Raw ``session.json`` (v1) or ``acquisition.json`` (v2) dict.
+    platform_raw : dict, optional
+        Raw ``platform.json`` dict, used only if the core file omits it.
+    core_file : Path, optional
+        Path to the core file, named in the error message.
+    input_dir : Path, optional
+        Input directory, named in the error message.
+    cli_override : float, optional
+        Operator-supplied frame rate, used when metadata provides none.
+    required : bool, optional
+        Raise when nothing supplies a frame rate instead of returning
+        ``None``.
+
+    Returns
+    -------
+    float or None
+        The frame rate in Hz, or ``None`` when unavailable and not
+        ``required``.
+
+    Raises
+    ------
+    ValueError
+        If ``required`` and neither the metadata nor ``cli_override``
+        supplies one. The message names the files tried and the schema
+        version.
+    """
+    rate = get_frame_rate(version, core_raw, platform_raw)
+    if rate is None and cli_override is not None:
+        logger.warning("Using CLI fallback frame rate: %s", cli_override)
+        rate = cli_override
+    if rate is None and required:
+        core_name = Path(core_file).name if core_file else "the core file"
+        raise ValueError(
+            f"No frame rate found in {core_name} (schema {version}) or "
+            f"{PLATFORM_FILE} under {input_dir or 'the input directory'}, "
+            "and no CLI override was supplied."
+        )
+    return None if rate is None else float(rate)
+
+
 # ---------------------------------------------------------------------------
 # Identifiers
 # ---------------------------------------------------------------------------
@@ -227,6 +297,36 @@ def get_dataset_name(
 # ---------------------------------------------------------------------------
 # FOV / plane naming
 # ---------------------------------------------------------------------------
+
+
+def as_int(value: Any) -> Optional[int]:
+    """Coerce a raw metadata value to int, or return ``None``.
+
+    An explicit JSON ``null`` is distinct from an absent key: ``dict.get``
+    returns the ``None`` rather than the default, so a bare ``int(...)``
+    raises ``TypeError`` on a field a real asset is allowed to leave blank.
+
+    Parameters
+    ----------
+    value : Any
+        Raw value from the metadata dict; strings are common in v1.
+
+    Returns
+    -------
+    int or None
+        The coerced value, or ``None`` when absent or uncoercible.
+    """
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        logger.warning("Ignoring non-numeric metadata value %r", value)
+        return None
+
+
+# Retained for consumers that imported the helper by its former private name.
+_as_int = as_int
 
 
 def acronym_from_targeted_structure(value) -> Optional[str]:
@@ -341,7 +441,7 @@ def get_fov_pairs_v1(session: dict) -> List[Tuple[int, Optional[str]]]:
             acronym = acronym_from_targeted_structure(
                 fov.get("targeted_structure")
             )
-            pairs.append((int(fov.get("index", 0)), acronym))
+            pairs.append((as_int(fov.get("index")) or 0, acronym))
     return pairs
 
 
@@ -375,7 +475,9 @@ def get_fov_pairs_v2(acquisition: dict) -> List[Tuple[int, Optional[str]]]:
                     acronym = acronym_from_targeted_structure(
                         plane.get("targeted_structure")
                     )
-                    pairs.append((int(plane.get("plane_index", 0)), acronym))
+                    pairs.append(
+                        (as_int(plane.get("plane_index")) or 0, acronym)
+                    )
     return pairs
 
 
@@ -399,3 +501,90 @@ def get_fov_ids(version: str, core_raw: dict) -> Tuple[str, ...]:
     else:
         pairs = get_fov_pairs_v2(core_raw)
     return build_fov_ids(pairs)
+
+
+def validate_scavenged_ids(
+    scavenged: Iterable[str],
+    canonical: Iterable[str],
+    logger: Optional[logging.Logger] = None,
+    *,
+    mode: str = SCAVENGE_MODE_ALL,
+) -> bool:
+    """Warn when directory-scavenged plane ids differ from canonical ones.
+
+    Some capsules recover plane ids from the names of upstream output
+    directories rather than re-deriving them from the acquisition metadata.
+    Uniqueness is the hard requirement and directory names already guarantee
+    it; matching the canonical ids only buys readability in the emitted
+    document. A divergence is therefore reported and never raised - killing
+    a completed run over a cosmetic id mismatch is the wrong trade.
+
+    Two comparisons are needed, and which one applies is a property of the
+    caller, not of the data. A per-plane capsule sees one plane per task
+    while :func:`get_fov_ids` returns every plane in the acquisition, so
+    set equality would warn on every plane of every multiplane run - noise
+    that trains readers to ignore the warning. The mode is therefore
+    explicit rather than inferred from how many ids were scavenged: a
+    one-plane multiplane acquisition would otherwise take the wrong branch
+    silently.
+
+    An empty ``canonical`` short-circuits to ``True``: an acquisition file
+    that lists no planes offers nothing to disagree with, and warning there
+    would be a guaranteed false positive.
+
+    Emits at most one warning per call, carrying both id sets so the
+    divergence is diagnosable from the run log alone.
+
+    Parameters
+    ----------
+    scavenged : iterable of str
+        Plane ids recovered from the input directory layout.
+    canonical : iterable of str
+        Plane ids derived from the acquisition metadata (see
+        :func:`get_fov_ids`).
+    logger : logging.Logger, optional
+        Logger to warn on; defaults to this module's logger.
+    mode : str, optional
+        ``SCAVENGE_MODE_ALL`` (the default) checks set equality and suits a
+        caller that scavenged every plane in the acquisition.
+        ``SCAVENGE_MODE_SINGLE`` checks membership - every scavenged id must
+        appear among the canonical ids - and suits a per-plane capsule whose
+        task sees exactly one plane.
+
+    Returns
+    -------
+    bool
+        ``True`` when the scavenged ids are consistent with the canonical
+        ones under ``mode``, ``False`` when they diverge.
+
+    Raises
+    ------
+    ValueError
+        If ``mode`` is not one of the two supported values. A mistyped mode
+        is a caller bug, not a data divergence, so it is not warned past.
+    """
+    if mode not in SCAVENGE_MODES:
+        raise ValueError(
+            f"Unknown mode {mode!r}; expected one of {sorted(SCAVENGE_MODES)}."
+        )
+    scavenged_set = set(scavenged)
+    canonical_set = set(canonical)
+    if not canonical_set:
+        return True
+    if mode == SCAVENGE_MODE_SINGLE:
+        consistent = scavenged_set <= canonical_set
+    else:
+        consistent = scavenged_set == canonical_set
+    if consistent:
+        return True
+    log = logger if logger is not None else logging.getLogger(__name__)
+    log.warning(
+        "Scavenged plane ids %s are not consistent with the canonical ids "
+        "%s derived from the acquisition metadata (mode=%s). Proceeding "
+        "with the scavenged ids: they are unique, which is what the "
+        "document requires.",
+        sorted(scavenged_set),
+        sorted(canonical_set),
+        mode,
+    )
+    return False
