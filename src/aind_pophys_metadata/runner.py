@@ -120,7 +120,9 @@ def stage_guard(
     **data_process_kwargs
         Forwarded to
         :func:`aind_pophys_metadata.processing.build_data_process` (``name``,
-        ``stage``, ``experimenters``, ``output_path``, ``pipeline_name``).
+        ``stage``, ``experimenters``, ``output_path``, ``pipeline_name``)
+        and :func:`aind_pophys_metadata.processing.build_processing`
+        (``pipelines``).
 
     Yields
     ------
@@ -281,6 +283,8 @@ def _write(
     Path
         Path to the written ``processing.json``.
     """
+    data_process_kwargs = dict(data_process_kwargs)
+    pipelines = data_process_kwargs.pop("pipelines", None)
     data_process = build_data_process(
         process_type,
         _merge_context_into_code(code, context),
@@ -294,6 +298,7 @@ def _write(
     )
     processing = build_processing(
         [data_process],
+        pipelines=pipelines,
         dependency_graph=build_dependency_graph(
             data_process.name, context.upstream_names
         ),

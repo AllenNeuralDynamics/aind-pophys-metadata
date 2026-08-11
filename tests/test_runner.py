@@ -5,6 +5,7 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from aind_data_schema.core.processing import Processing, ProcessStage
 from aind_data_schema_models.process_names import ProcessName
@@ -139,6 +140,29 @@ class TestStageGuard(unittest.TestCase):
             process = _load(out)["data_processes"][0]
         self.assertEqual(process["name"], "Custom name")
         self.assertEqual(process["stage"], ProcessStage.ANALYSIS.value)
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_pipeline_kwargs_forwarded_together(self):
+        """Explicit pipeline metadata can be supplied without env vars."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            pipeline = processing.build_code(
+                name="explicit", library_name=_INSTALLED_LIBRARY
+            )
+            with runner.stage_guard(
+                out,
+                ProcessName.DF_F_ESTIMATION,
+                _code(),
+                pipeline_name="explicit",
+                pipelines=[pipeline],
+            ):
+                pass
+            doc = _load(out)
+        Processing.model_validate(doc)
+        self.assertEqual(doc["pipelines"][0]["name"], "explicit")
+        self.assertEqual(
+            doc["data_processes"][0]["pipeline_name"], "explicit"
+        )
 
     def test_resources_are_prepopulated(self):
         """The context arrives with a static resource capture attached."""
