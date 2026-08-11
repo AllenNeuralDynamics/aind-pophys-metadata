@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from aind_pophys_metadata.paths import find_one
+
 SCHEMA_V1 = "v1"
 SCHEMA_V2 = "v2"
 
@@ -59,7 +61,7 @@ def find(input_dir: Path, name: str) -> Optional[Path]:
     Path or None
         The first match, or ``None`` if there is none.
     """
-    return next(Path(input_dir).rglob(name), None)
+    return find_one(input_dir, name, recursive=True, required=False)
 
 
 def require(blob: dict, key: str, file_path: Path) -> Any:

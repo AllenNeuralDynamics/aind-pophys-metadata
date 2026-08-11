@@ -146,6 +146,21 @@ class TestLoadCommon(unittest.TestCase):
         """load_optional returns None when the file is not there."""
         self.assertIsNone(io.load_optional(self.root, "nope.json"))
 
+    def test_load_optional_uses_sorted_first_match(self):
+        """load_optional chooses the lexicographically first duplicate."""
+        (self.root / "a").mkdir()
+        (self.root / "b").mkdir()
+        (self.root / "a" / io.SUBJECT_FILE).write_text(
+            json.dumps({"subject_id": "first"})
+        )
+        (self.root / "b" / io.SUBJECT_FILE).write_text(
+            json.dumps({"subject_id": "second"})
+        )
+        self.assertEqual(
+            io.load_optional(self.root, io.SUBJECT_FILE),
+            {"subject_id": "first"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
