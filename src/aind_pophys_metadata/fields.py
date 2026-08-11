@@ -62,9 +62,9 @@ def get_frame_rate_v1(session: dict) -> Optional[float]:
         The frame rate in Hz, or ``None`` if no FOV declares one.
     """
     for stream in session.get("data_streams") or []:
-        fovs = stream.get("ophys_fovs") or []
-        if fovs and fovs[0].get("frame_rate") is not None:
-            return float(fovs[0]["frame_rate"])
+        for fov in stream.get("ophys_fovs") or []:
+            if fov.get("frame_rate") is not None:
+                return float(fov["frame_rate"])
     return None
 
 
@@ -320,7 +320,7 @@ def as_int(value: Any) -> Optional[int]:
         return None
     try:
         return int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         logger.warning("Ignoring non-numeric metadata value %r", value)
         return None
 

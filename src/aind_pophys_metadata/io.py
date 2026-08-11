@@ -117,19 +117,17 @@ def find_acquisition_file(input_dir: Path) -> Path:
         If neither file is present.
     """
     input_dir = Path(input_dir)
-    acq_matches = list(input_dir.rglob(V2_CORE_FILE))
-    session_matches = list(input_dir.rglob(V1_CORE_FILE))
-    if acq_matches and session_matches:
+    acq_matches = sorted(input_dir.rglob(V2_CORE_FILE))
+    session_matches = sorted(input_dir.rglob(V1_CORE_FILE))
+    matches = acq_matches + session_matches
+    if len(matches) > 1:
         raise ValueError(
-            f"Ambiguous input: found both v2 {V2_CORE_FILE} "
-            f"({acq_matches[0]}) and v1 {V1_CORE_FILE} "
-            f"({session_matches[0]}) under {input_dir}. "
-            f"Remove one to disambiguate."
+            "Ambiguous input: found multiple core metadata files under "
+            f"{input_dir}: {', '.join(map(str, matches))}. "
+            "Keep exactly one session.json or acquisition.json."
         )
-    if acq_matches:
-        return acq_matches[0]
-    if session_matches:
-        return session_matches[0]
+    if matches:
+        return matches[0]
     raise FileNotFoundError(
         f"No {V2_CORE_FILE} (v2) or {V1_CORE_FILE} (v1) found under "
         f"{input_dir}"
@@ -150,7 +148,12 @@ def detect_schema_version(core_file: Path) -> str:
     str
         :data:`SCHEMA_V1` for ``session.json``, else :data:`SCHEMA_V2`.
     """
-    return SCHEMA_V1 if Path(core_file).name == V1_CORE_FILE else SCHEMA_V2
+    name = Path(core_file).name
+    if name == V1_CORE_FILE:
+        return SCHEMA_V1
+    if name == V2_CORE_FILE:
+        return SCHEMA_V2
+    raise ValueError(f"Unsupported core metadata file: {core_file}")
 
 
 @dataclass(frozen=True)

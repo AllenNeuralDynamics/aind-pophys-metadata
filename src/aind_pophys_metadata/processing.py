@@ -498,11 +498,18 @@ def collect_upstream_process_names(
         try:
             blob = load_json(path)
             processes = blob.get("data_processes") or []
+            if not isinstance(processes, list):
+                raise ValueError("data_processes must be a list")
         except (OSError, ValueError, AttributeError) as exc:
             logger.warning("Skipping unreadable %s: %s", path, exc)
             continue
         for process in processes:
-            name = (process or {}).get("name")
+            if not isinstance(process, dict):
+                logger.warning(
+                    "Skipping malformed process in %s: %r", path, process
+                )
+                continue
+            name = process.get("name")
             if name and name != exclude and name not in names:
                 names.append(name)
     return names

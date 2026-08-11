@@ -57,8 +57,8 @@ class StageContext:
         Free-text notes. Replaced with the exception text when the stage
         body raises.
     upstream_names : list of str
-        Upstream ``DataProcess`` names for the dependency graph (see
-        :func:`aind_pophys_metadata.processing.collect_upstream_process_names`).
+        Upstream ``DataProcess`` names for the dependency graph; see
+        ``processing.collect_upstream_process_names``.
     resources : ResourceUsage or None
         Host resource description; pre-populated with the static capture.
     input_data : list of str
@@ -155,6 +155,20 @@ def stage_guard(
             extra={EVENT_TYPE_FIELD: STAGE_ERROR},
         )
         context.notes = f"{STAGE_ERROR}: {exc}"
+        try:
+            _write(
+                output_dir,
+                process_type,
+                code,
+                start_time,
+                plane_id,
+                context,
+                data_process_kwargs,
+            )
+        except Exception:
+            log.exception("Failed to write processing metadata")
+        raise
+    try:
         _write(
             output_dir,
             process_type,
@@ -164,21 +178,19 @@ def stage_guard(
             context,
             data_process_kwargs,
         )
+    except Exception as exc:
+        log.error(
+            "%s: %s",
+            STAGE_ERROR,
+            exc,
+            extra={EVENT_TYPE_FIELD: STAGE_ERROR},
+        )
         raise
     log.info(
         "%s: process_type=%s",
         STAGE_COMPLETE,
         getattr(process_type, "value", process_type),
         extra={EVENT_TYPE_FIELD: STAGE_COMPLETE},
-    )
-    _write(
-        output_dir,
-        process_type,
-        code,
-        start_time,
-        plane_id,
-        context,
-        data_process_kwargs,
     )
 
 
