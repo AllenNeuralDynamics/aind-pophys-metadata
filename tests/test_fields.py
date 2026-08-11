@@ -311,7 +311,7 @@ class TestAsInt(unittest.TestCase):
     """Safe int coercion over raw metadata values."""
 
     def test_coerces_int_float_and_string(self):
-        """Numeric shapes v1 and v2 both produce are accepted."""
+        """Numeric shapes produced by both v1 and v2 are accepted."""
         self.assertEqual(fields._as_int(3), 3)
         self.assertEqual(fields._as_int(3.7), 3)
         self.assertEqual(fields._as_int("4"), 4)
