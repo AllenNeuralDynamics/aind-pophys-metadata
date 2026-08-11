@@ -276,7 +276,8 @@ def _write(
     context : StageContext
         The populated stage context.
     data_process_kwargs : dict
-        Extra keyword arguments for ``build_data_process``.
+        Extra keyword arguments; ``pipelines`` is routed to
+        ``build_processing`` and the remainder to ``build_data_process``.
 
     Returns
     -------
