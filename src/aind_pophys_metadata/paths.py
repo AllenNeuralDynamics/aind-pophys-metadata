@@ -81,10 +81,15 @@ def relative_to_root(root: Path, path: Path) -> str:
     Returns
     -------
     str
-        ``path`` relative to ``root``, or the absolute ``path`` when it is
-        genuinely outside ``root`` (so provenance is never dropped entirely).
+        ``path`` relative to ``root``, or the resolved absolute ``path`` when
+        it is genuinely outside ``root`` (so provenance is never dropped
+        entirely).
     """
+    resolved = Path(path).resolve()
     try:
-        return str(Path(path).resolve().relative_to(Path(root).resolve()))
+        return str(resolved.relative_to(Path(root).resolve()))
     except ValueError:
-        return str(path)
+        # Resolved, not the caller's input: a relative path outside the root
+        # would otherwise be recorded as another relative path, which says
+        # nothing about where the file actually is.
+        return str(resolved)

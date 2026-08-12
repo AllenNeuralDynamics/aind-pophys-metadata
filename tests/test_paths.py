@@ -10,7 +10,7 @@ from aind_pophys_metadata import paths
 class TestFindOne(unittest.TestCase):
     """Glob-with-a-default discovery helper."""
 
-    def test_finds_nested_match(self):
+    def test_finds_nested_match(self) -> None:
         """A recursive search descends into subdirectories."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -20,7 +20,7 @@ class TestFindOne(unittest.TestCase):
             found = paths.find_one(root, "*.h5")
         self.assertEqual(found.name, "traces.h5")
 
-    def test_non_recursive_skips_subdirectories(self):
+    def test_non_recursive_skips_subdirectories(self) -> None:
         """recursive=False globs only the given directory."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -31,7 +31,7 @@ class TestFindOne(unittest.TestCase):
             )
         self.assertIsNone(found)
 
-    def test_multiple_matches_pick_is_deterministic(self):
+    def test_multiple_matches_pick_is_deterministic(self) -> None:
         """With several matches the lexicographically first one wins."""
         names = ["c.h5", "a.h5", "b.h5"]
         with tempfile.TemporaryDirectory() as tmp:
@@ -42,7 +42,7 @@ class TestFindOne(unittest.TestCase):
             picks = {paths.find_one(root, "*.h5").name for _ in range(5)}
         self.assertEqual(picks, {"a.h5"})
 
-    def test_multiple_matches_sort_spans_subdirectories(self):
+    def test_multiple_matches_sort_spans_subdirectories(self) -> None:
         """The sort is over full paths, not per-directory arrival order."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -52,14 +52,14 @@ class TestFindOne(unittest.TestCase):
             found = paths.find_one(root, "*.h5")
         self.assertEqual(found.parent.name, "a_dir")
 
-    def test_optional_miss_returns_none(self):
+    def test_optional_miss_returns_none(self) -> None:
         """required=False returns None rather than raising."""
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(
                 paths.find_one(Path(tmp), "*.nope", required=False)
             )
 
-    def test_required_miss_names_pattern_and_directory(self):
+    def test_required_miss_names_pattern_and_directory(self) -> None:
         """The error carries both the pattern and the directory."""
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(FileNotFoundError) as ctx:
@@ -72,7 +72,7 @@ class TestFindOne(unittest.TestCase):
 class TestRelativeToRoot(unittest.TestCase):
     """Provenance path rendering."""
 
-    def test_path_inside_root(self):
+    def test_path_inside_root(self) -> None:
         """A path under the root renders relative."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -83,16 +83,27 @@ class TestRelativeToRoot(unittest.TestCase):
                 str(Path("VISp_0") / "dff"),
             )
 
-    def test_path_outside_root_is_returned_whole(self):
-        """A path genuinely outside the root keeps its full value."""
+    def test_path_outside_root_is_returned_absolute(self) -> None:
+        """A path genuinely outside the root renders absolute."""
         with tempfile.TemporaryDirectory() as tmp:
             other = Path(tmp) / "elsewhere"
             self.assertEqual(
                 paths.relative_to_root(Path("/nonexistent-root"), other),
-                str(other),
+                str(other.resolve()),
             )
 
-    def test_symlinked_root_resolves_both_sides(self):
+    def test_relative_path_outside_root_is_made_absolute(self) -> None:
+        """A relative input never renders as another relative path.
+
+        Provenance has to say where the file is; ``../elsewhere/file`` on its
+        own identifies nothing once the working directory is forgotten.
+        """
+        rendered = paths.relative_to_root(
+            Path("/nonexistent-root"), Path("../elsewhere/file")
+        )
+        self.assertTrue(Path(rendered).is_absolute())
+
+    def test_symlinked_root_resolves_both_sides(self) -> None:
         """A symlinked root still yields a relative path, not an absolute."""
         with tempfile.TemporaryDirectory() as tmp:
             real = Path(tmp) / "real"

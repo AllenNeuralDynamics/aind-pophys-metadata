@@ -5,8 +5,10 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Callable, List
 from unittest.mock import patch
 
+from aind_data_schema.components.identifiers import Code
 from aind_data_schema.core.processing import Processing, ProcessStage
 from aind_data_schema_models.process_names import ProcessName
 
@@ -15,7 +17,7 @@ from aind_pophys_metadata import processing, runner
 _INSTALLED_LIBRARY = "aind-pophys-metadata"
 
 
-def _code():
+def _code() -> Code:
     """Build a minimal Code block for reuse."""
     return processing.build_code(
         name="Example", library_name=_INSTALLED_LIBRARY
@@ -30,7 +32,7 @@ def _load(output_dir: Path) -> dict:
 class TestStageGuard(unittest.TestCase):
     """Stage lifecycle logging, timing and write-on-either-path."""
 
-    def test_success_writes_valid_document(self):
+    def test_success_writes_valid_document(self) -> None:
         """A clean stage writes a schema-valid processing.json."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -44,7 +46,7 @@ class TestStageGuard(unittest.TestCase):
         self.assertEqual(process["output_parameters"]["frames"], 10)
         self.assertIsNone(process["notes"])
 
-    def test_error_writes_valid_document_and_reraises(self):
+    def test_error_writes_valid_document_and_reraises(self) -> None:
         """A failed stage still emits a document that round-trips."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -59,7 +61,7 @@ class TestStageGuard(unittest.TestCase):
         self.assertIn("boom", doc["data_processes"][0]["notes"])
         self.assertIn(runner.STAGE_ERROR, doc["data_processes"][0]["notes"])
 
-    def test_start_time_survives_an_immediate_exception(self):
+    def test_start_time_survives_an_immediate_exception(self) -> None:
         """A body that raises at once still records a real start time."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -74,7 +76,7 @@ class TestStageGuard(unittest.TestCase):
             process["start_date_time"], process["end_date_time"]
         )
 
-    def test_lifecycle_log_lines(self):
+    def test_lifecycle_log_lines(self) -> None:
         """stage_start and stage_complete are emitted on the clean path."""
         log = logging.getLogger("test_stage_guard")
         with tempfile.TemporaryDirectory() as tmp:
@@ -90,7 +92,7 @@ class TestStageGuard(unittest.TestCase):
         self.assertIn(runner.STAGE_START, output)
         self.assertIn(runner.STAGE_COMPLETE, output)
 
-    def test_error_log_line(self):
+    def test_error_log_line(self) -> None:
         """stage_error carries the exception text."""
         log = logging.getLogger("test_stage_guard_error")
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,7 +107,7 @@ class TestStageGuard(unittest.TestCase):
                         raise RuntimeError("kaboom")
         self.assertIn("kaboom", "\n".join(logs.output))
 
-    def test_plane_id_and_dependency_graph(self):
+    def test_plane_id_and_dependency_graph(self) -> None:
         """plane_id namespaces the name and keys the dependency graph."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -124,7 +126,7 @@ class TestStageGuard(unittest.TestCase):
             {name: ["VISp_0: Video motion correction"]},
         )
 
-    def test_data_process_kwargs_forwarded(self):
+    def test_data_process_kwargs_forwarded(self) -> None:
         """Extra keyword arguments reach build_data_process."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -142,7 +144,7 @@ class TestStageGuard(unittest.TestCase):
         self.assertEqual(process["stage"], ProcessStage.ANALYSIS.value)
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_pipeline_kwargs_forwarded_together(self):
+    def test_pipeline_kwargs_forwarded_together(self) -> None:
         """Explicit pipeline metadata can be supplied without env vars."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -164,7 +166,7 @@ class TestStageGuard(unittest.TestCase):
             doc["data_processes"][0]["pipeline_name"], "explicit"
         )
 
-    def test_resources_are_prepopulated(self):
+    def test_resources_are_prepopulated(self) -> None:
         """The context arrives with a static resource capture attached."""
         with tempfile.TemporaryDirectory() as tmp:
             with runner.stage_guard(
@@ -174,7 +176,7 @@ class TestStageGuard(unittest.TestCase):
                 self.assertTrue(ctx.resources.os)
                 self.assertIsNone(ctx.resources.cpu_usage)
 
-    def test_notes_set_by_body_are_kept(self):
+    def test_notes_set_by_body_are_kept(self) -> None:
         """A note recorded by a clean body survives to the document."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -190,7 +192,7 @@ class TestStageGuard(unittest.TestCase):
 class TestMidRunInputData(unittest.TestCase):
     """Input artifacts resolved inside the guarded body."""
 
-    def test_input_data_populated_mid_run_reaches_the_document(self):
+    def test_input_data_populated_mid_run_reaches_the_document(self) -> None:
         """A name recorded during the body lands on Code.input_data."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -204,7 +206,7 @@ class TestMidRunInputData(unittest.TestCase):
             ["motion_corrected.h5"],
         )
 
-    def test_up_front_and_mid_run_input_data_compose(self):
+    def test_up_front_and_mid_run_input_data_compose(self) -> None:
         """build_code names are kept and mid-run names append, deduped."""
         code = processing.build_code(
             name="Example",
@@ -225,7 +227,7 @@ class TestMidRunInputData(unittest.TestCase):
         # The caller's Code object is not mutated by the guard.
         self.assertEqual([a.name for a in code.input_data], ["raw.h5"])
 
-    def test_ephemeral_input_data_added_mid_run_is_rejected(self):
+    def test_ephemeral_input_data_added_mid_run_is_rejected(self) -> None:
         """A scratch path resolved during the body still fails the guard."""
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError) as ctx_manager:
@@ -239,7 +241,7 @@ class TestMidRunInputData(unittest.TestCase):
 class TestMidRunParameters(unittest.TestCase):
     """Run parameters only knowable once the stage has run."""
 
-    def test_parameters_populated_mid_run_reach_the_document(self):
+    def test_parameters_populated_mid_run_reach_the_document(self) -> None:
         """Resolved values recorded during the body land on Code."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
@@ -250,7 +252,7 @@ class TestMidRunParameters(unittest.TestCase):
             code = _load(out)["data_processes"][0]["code"]
         self.assertEqual(code["parameters"]["resolved_diameter"], 12)
 
-    def test_mid_run_parameters_override_configured_ones(self):
+    def test_mid_run_parameters_override_configured_ones(self) -> None:
         """A key set both up front and mid-run keeps the resolved value."""
         code = processing.build_code(
             name="Example",
@@ -268,7 +270,7 @@ class TestMidRunParameters(unittest.TestCase):
         self.assertEqual(written["parameters"]["batch_size"], 500)
         self.assertIsNone(dict(code.parameters)["diameter"])
 
-    def test_ephemeral_parameter_added_mid_run_is_rejected(self):
+    def test_ephemeral_parameter_added_mid_run_is_rejected(self) -> None:
         """A scratch path in a resolved parameter still fails the guard."""
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError) as ctx_manager:
@@ -282,12 +284,12 @@ class TestMidRunParameters(unittest.TestCase):
 class _CapturingHandler(logging.Handler):
     """Collect raw LogRecords so structured extras stay inspectable."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Start with an empty record list."""
         super().__init__()
         self.records = []
 
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord) -> None:
         """Store the record verbatim.
 
         Parameters
@@ -298,7 +300,9 @@ class _CapturingHandler(logging.Handler):
         self.records.append(record)
 
 
-def _capture(callable_):
+def _capture(
+    callable_: Callable[[logging.Logger], None]
+) -> List[logging.LogRecord]:
     """Run ``callable_`` with a capturing logger and return its records.
 
     Parameters
@@ -325,10 +329,10 @@ def _capture(callable_):
 class TestStructuredEventType(unittest.TestCase):
     """The log-schema structured marker CloudWatch queries key on."""
 
-    def test_success_path_emits_start_and_complete(self):
+    def test_success_path_emits_start_and_complete(self) -> None:
         """Both lifecycle records carry the structured event_type field."""
 
-        def body(log):
+        def body(log: logging.Logger) -> None:
             """Run a clean stage against the capturing logger."""
             with tempfile.TemporaryDirectory() as tmp:
                 with runner.stage_guard(
@@ -345,10 +349,10 @@ class TestStructuredEventType(unittest.TestCase):
         ]
         self.assertEqual(events, [runner.STAGE_START, runner.STAGE_COMPLETE])
 
-    def test_error_path_emits_stage_error(self):
+    def test_error_path_emits_stage_error(self) -> None:
         """A failed stage tags its record with the error event_type."""
 
-        def body(log):
+        def body(log: logging.Logger) -> None:
             """Run a failing stage against the capturing logger."""
             with tempfile.TemporaryDirectory() as tmp:
                 with self.assertRaises(RuntimeError):
@@ -366,10 +370,39 @@ class TestStructuredEventType(unittest.TestCase):
         ]
         self.assertEqual(events, [runner.STAGE_START, runner.STAGE_ERROR])
 
-    def test_message_text_is_kept_alongside_the_field(self):
+    def test_write_failure_keeps_the_body_exception(self) -> None:
+        """A failing write must not mask what the stage body raised.
+
+        The body's exception is the diagnostic; the write failure is
+        secondary and is reported through the log instead.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                runner, "_write", side_effect=OSError("disk full")
+            ):
+                with self.assertLogs(
+                    runner.__name__, level="ERROR"
+                ) as logs:
+                    with self.assertRaises(RuntimeError) as ctx:
+                        with runner.stage_guard(
+                            Path(tmp),
+                            ProcessName.DF_F_ESTIMATION,
+                            _code(),
+                        ):
+                            raise RuntimeError("boom")
+
+        self.assertEqual(str(ctx.exception), "boom")
+        self.assertTrue(
+            any(
+                "Failed to write processing metadata" in message
+                for message in logs.output
+            )
+        )
+
+    def test_message_text_is_kept_alongside_the_field(self) -> None:
         """The readable line survives; the field is additive, not a swap."""
 
-        def body(log):
+        def body(log: logging.Logger) -> None:
             """Run a clean stage against the capturing logger."""
             with tempfile.TemporaryDirectory() as tmp:
                 with runner.stage_guard(

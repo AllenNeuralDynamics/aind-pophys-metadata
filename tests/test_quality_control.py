@@ -4,7 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aind_data_schema.core.quality_control import QualityControl, Status
+from aind_data_schema.core.quality_control import (
+    QCMetric,
+    QualityControl,
+    Status,
+)
 
 from aind_pophys_metadata import quality_control as qc
 
@@ -12,7 +16,7 @@ from aind_pophys_metadata import quality_control as qc
 class TestQualityControl(unittest.TestCase):
     """QC status, dropdown metric, wrapper, and writer."""
 
-    def _metric(self):
+    def _metric(self) -> QCMetric:
         """Build a dropdown metric for reuse."""
         return qc.dropdown_metric(
             name="plane_0 FOV Quality",
@@ -23,32 +27,32 @@ class TestQualityControl(unittest.TestCase):
             description="Assess FOV quality.",
         )
 
-    def test_pending_status_default(self):
+    def test_pending_status_default(self) -> None:
         """Default pending status is PENDING with the default evaluator."""
         status = qc.pending_qc_status()
         self.assertEqual(status.status, Status.PENDING)
         self.assertEqual(status.evaluator, "Pending review")
 
-    def test_pending_status_custom_evaluator(self):
+    def test_pending_status_custom_evaluator(self) -> None:
         """A custom evaluator is honored."""
         self.assertEqual(
             qc.pending_qc_status("Automated").evaluator, "Automated"
         )
 
-    def test_dropdown_metric_tags(self):
+    def test_dropdown_metric_tags(self) -> None:
         """The metric carries evaluation and type tags."""
         metric = self._metric()
         self.assertEqual(metric.tags["evaluation"], "FOV Quality")
         self.assertEqual(metric.tags["type"], "Operational QC")
         self.assertEqual(metric.reference, "plane_0/proj.png")
 
-    def test_dropdown_value_is_always_empty(self):
+    def test_dropdown_value_is_always_empty(self) -> None:
         """A pending dropdown carries "" -- qcportal's pending contract."""
         metric = self._metric()
         self.assertEqual(metric.value.value, "")
         self.assertEqual(metric.status_history[0].status, Status.PENDING)
 
-    def test_dropdown_metric_takes_no_preset_value(self):
+    def test_dropdown_metric_takes_no_preset_value(self) -> None:
         """There is deliberately no parameter to preselect a value.
 
         A preselected value on a PENDING metric renders as already
@@ -64,13 +68,13 @@ class TestQualityControl(unittest.TestCase):
                 value="a",
             )
 
-    def test_build_quality_control_grouping(self):
+    def test_build_quality_control_grouping(self) -> None:
         """The wrapper sets the standard default grouping."""
         doc = qc.build_quality_control([self._metric()])
         self.assertEqual(doc.default_grouping, qc.DEFAULT_GROUPING)
         self.assertEqual(len(doc.metrics), 1)
 
-    def test_write_quality_control_json(self):
+    def test_write_quality_control_json(self) -> None:
         """The writer emits quality_control.json and returns its path."""
         doc = qc.build_quality_control([self._metric()])
         self.assertIsInstance(doc, QualityControl)

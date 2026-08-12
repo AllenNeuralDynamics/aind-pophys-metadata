@@ -13,12 +13,12 @@ from aind_pophys_metadata import io
 class TestIo(unittest.TestCase):
     """File discovery, JSON reads, and schema-version dispatch."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         """Create a temp working directory."""
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         """Clean up the temp directory."""
         self._tmp.cleanup()
 
@@ -29,55 +29,55 @@ class TestIo(unittest.TestCase):
         path.write_text(json.dumps(obj))
         return path
 
-    def test_load_json(self):
+    def test_load_json(self) -> None:
         """load_json round-trips a dict."""
         path = self._write("a.json", {"k": 1})
         self.assertEqual(io.load_json(path), {"k": 1})
 
-    def test_find_hit_and_miss(self):
+    def test_find_hit_and_miss(self) -> None:
         """find returns a nested match, or None when absent."""
         self._write("sub/dir/target.json", {})
         self.assertIsNotNone(io.find(self.root, "target.json"))
         self.assertIsNone(io.find(self.root, "missing.json"))
 
-    def test_require_present(self):
+    def test_require_present(self) -> None:
         """require returns the value when the key exists."""
         self.assertEqual(io.require({"x": 5}, "x", Path("f.json")), 5)
 
-    def test_require_missing_raises(self):
+    def test_require_missing_raises(self) -> None:
         """require raises KeyError naming the field and file."""
         with self.assertRaises(KeyError) as ctx:
             io.require({}, "x", Path("f.json"))
         self.assertIn("x", str(ctx.exception))
         self.assertIn("f.json", str(ctx.exception))
 
-    def test_find_acquisition_prefers_v2(self):
+    def test_find_acquisition_prefers_v2(self) -> None:
         """Only acquisition.json present -> returns it."""
         self._write("acquisition.json", {})
         self.assertEqual(
             io.find_acquisition_file(self.root).name, "acquisition.json"
         )
 
-    def test_find_acquisition_v1_fallback(self):
+    def test_find_acquisition_v1_fallback(self) -> None:
         """Only session.json present -> returns it."""
         self._write("session.json", {})
         self.assertEqual(
             io.find_acquisition_file(self.root).name, "session.json"
         )
 
-    def test_find_acquisition_ambiguous_raises(self):
+    def test_find_acquisition_ambiguous_raises(self) -> None:
         """Both files present -> ValueError."""
         self._write("acquisition.json", {})
         self._write("session.json", {})
         with self.assertRaises(ValueError):
             io.find_acquisition_file(self.root)
 
-    def test_find_acquisition_missing_raises(self):
+    def test_find_acquisition_missing_raises(self) -> None:
         """Neither file present -> FileNotFoundError."""
         with self.assertRaises(FileNotFoundError):
             io.find_acquisition_file(self.root)
 
-    def test_detect_schema_version(self):
+    def test_detect_schema_version(self) -> None:
         """session.json -> v1, acquisition.json -> v2."""
         self.assertEqual(
             io.detect_schema_version(Path("x/session.json")), io.SCHEMA_V1
@@ -87,7 +87,13 @@ class TestIo(unittest.TestCase):
             io.SCHEMA_V2,
         )
 
-    def test_object_type_value(self):
+    def test_detect_schema_version_rejects_unknown_name(self) -> None:
+        """An unrecognised core filename is an error, not a v2 guess."""
+        with self.assertRaises(ValueError) as ctx:
+            io.detect_schema_version(Path("x/sesion.json"))
+        self.assertIn("sesion.json", str(ctx.exception))
+
+    def test_object_type_value(self) -> None:
         """object_type_value reads a non-empty discriminator default."""
         value = io.object_type_value(ImagingConfig)
         self.assertIsInstance(value, str)
@@ -97,7 +103,7 @@ class TestIo(unittest.TestCase):
 class TestLoadCommon(unittest.TestCase):
     """The shared find-core-file / detect-version / load-siblings preamble."""
 
-    def setUp(self):
+    def setUp(self) -> None:
         """Create a temp working directory."""
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
@@ -107,7 +113,7 @@ class TestLoadCommon(unittest.TestCase):
         """Write a metadata file into the temp directory."""
         (self.root / name).write_text(json.dumps(blob))
 
-    def test_loads_v2_core_and_all_siblings(self):
+    def test_loads_v2_core_and_all_siblings(self) -> None:
         """Every optional sibling present is loaded."""
         self._write(io.V2_CORE_FILE, {"instrument_id": "MESO.1"})
         self._write(io.PLATFORM_FILE, {"imaging_plane_groups": []})
@@ -121,7 +127,7 @@ class TestLoadCommon(unittest.TestCase):
         self.assertEqual(common.data_description_raw["name"], "ds")
         self.assertIsNotNone(common.platform_raw)
 
-    def test_absent_siblings_are_none(self):
+    def test_absent_siblings_are_none(self) -> None:
         """A v1 asset with no siblings still loads."""
         self._write(io.V1_CORE_FILE, {"rig_id": "rig"})
         common = io.load_common(self.root)
@@ -130,23 +136,23 @@ class TestLoadCommon(unittest.TestCase):
         self.assertIsNone(common.subject_raw)
         self.assertIsNone(common.data_description_raw)
 
-    def test_result_is_frozen(self):
+    def test_result_is_frozen(self) -> None:
         """The result is immutable; callers spread rather than mutate."""
         self._write(io.V1_CORE_FILE, {})
         common = io.load_common(self.root)
         with self.assertRaises(Exception):
             common.version = io.SCHEMA_V2
 
-    def test_missing_core_file_raises(self):
+    def test_missing_core_file_raises(self) -> None:
         """An input directory with no core file fails loudly."""
         with self.assertRaises(FileNotFoundError):
             io.load_common(self.root)
 
-    def test_load_optional_absent(self):
+    def test_load_optional_absent(self) -> None:
         """load_optional returns None when the file is not there."""
         self.assertIsNone(io.load_optional(self.root, "nope.json"))
 
-    def test_load_optional_uses_sorted_first_match(self):
+    def test_load_optional_uses_sorted_first_match(self) -> None:
         """load_optional chooses the lexicographically first duplicate."""
         (self.root / "b").mkdir()
         (self.root / "b" / io.SUBJECT_FILE).write_text(

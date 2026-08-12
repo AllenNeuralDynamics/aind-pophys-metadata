@@ -329,7 +329,7 @@ def as_int(value: Any) -> Optional[int]:
 _as_int = as_int
 
 
-def acronym_from_targeted_structure(value) -> Optional[str]:
+def acronym_from_targeted_structure(value: Any) -> Optional[str]:
     """Extract a structure acronym from a v1/v2 ``targeted_structure`` value.
 
     The field type changed across schema versions, so tolerate all shapes: a

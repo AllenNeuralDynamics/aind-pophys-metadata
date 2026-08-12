@@ -18,25 +18,25 @@ SUBMODULES = (
 class TestPublicSurface(unittest.TestCase):
     """__all__ must describe what the package actually exports."""
 
-    def test_every_exported_name_is_importable(self):
+    def test_every_exported_name_is_importable(self) -> None:
         """Nothing in __all__ is missing from the package namespace."""
         for name in aind_pophys_metadata.__all__:
             with self.subTest(name=name):
                 self.assertTrue(hasattr(aind_pophys_metadata, name))
 
-    def test_exports_are_unique(self):
+    def test_exports_are_unique(self) -> None:
         """A name listed twice would hide a copy-paste merge error."""
         self.assertEqual(
             len(aind_pophys_metadata.__all__),
             len(set(aind_pophys_metadata.__all__)),
         )
 
-    def test_no_private_names_are_exported(self):
+    def test_no_private_names_are_exported(self) -> None:
         """Private helpers stay reachable only at their submodule path."""
         for name in aind_pophys_metadata.__all__:
             self.assertFalse(name.startswith("_"), name)
 
-    def test_exports_are_the_submodule_objects(self):
+    def test_exports_are_the_submodule_objects(self) -> None:
         """Re-export never shadows the submodule path a consumer imported."""
         for module_name in SUBMODULES:
             module = importlib.import_module(
@@ -50,7 +50,7 @@ class TestPublicSurface(unittest.TestCase):
                             getattr(module, name),
                         )
 
-    def test_public_module_names_are_all_exported(self):
+    def test_public_module_names_are_all_exported(self) -> None:
         """A new public helper cannot drift out of __all__ unnoticed."""
         exported = set(aind_pophys_metadata.__all__)
         for module_name in SUBMODULES:

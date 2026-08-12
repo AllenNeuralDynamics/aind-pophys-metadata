@@ -63,7 +63,7 @@ def dropdown_metric(
     *,
     reference: Optional[str] = None,
     description: str = "",
-    modality=Modality.POPHYS,
+    modality: Modality = Modality.POPHYS,
     stage: Stage = Stage.PROCESSING,
     metric_type: str = _OPERATIONAL_QC,
     evaluator: str = "Pending review",

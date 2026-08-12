@@ -15,8 +15,7 @@ Public API grouped by module:
   ``processing.json`` on both the success and the failure path.
 
 Every name in ``__all__`` is re-exported here and also remains importable
-from its own submodule; the submodule paths are the older spelling and stay
-supported.
+from its own submodule.
 """
 
 from aind_pophys_metadata.fields import (

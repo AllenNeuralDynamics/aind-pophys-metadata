@@ -95,7 +95,7 @@ def stage_guard(
     *,
     plane_id: Optional[str] = None,
     logger: Optional[logging.Logger] = None,
-    **data_process_kwargs,
+    **data_process_kwargs: Any,
 ) -> Iterator[StageContext]:
     """Time a processing stage and write its ``processing.json`` either way.
 
