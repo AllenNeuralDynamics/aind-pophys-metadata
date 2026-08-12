@@ -59,6 +59,8 @@ from aind_pophys_metadata.io import (
 )
 from aind_pophys_metadata.paths import find_one, relative_to_root
 from aind_pophys_metadata.processing import (
+    MODEL_SOURCE_ASSET,
+    MODEL_SOURCE_NETWORK,
     EPHEMERAL_PATH_MARKER,
     PIPELINE_NAME_ENV,
     PIPELINE_URL_ENV,
@@ -70,7 +72,9 @@ from aind_pophys_metadata.processing import (
     build_processing,
     collect_static_resources,
     collect_upstream_process_names,
+    file_sha256,
     library_version,
+    model_provenance,
     pipeline_code,
     pipeline_name_from_env,
     reject_ephemeral_paths,
@@ -139,6 +143,8 @@ __all__ = [
     "relative_to_root",
     # processing
     "EPHEMERAL_PATH_MARKER",
+    "MODEL_SOURCE_ASSET",
+    "MODEL_SOURCE_NETWORK",
     "PIPELINE_NAME_ENV",
     "PIPELINE_URL_ENV",
     "PIPELINE_VERSION_ENV",
@@ -149,6 +155,8 @@ __all__ = [
     "build_processing",
     "collect_static_resources",
     "collect_upstream_process_names",
+    "file_sha256",
+    "model_provenance",
     "library_version",
     "pipeline_code",
     "pipeline_name_from_env",

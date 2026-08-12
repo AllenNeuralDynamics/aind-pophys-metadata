@@ -67,7 +67,8 @@ submodule. Both spellings are supported; `tests/test_public_api.py` asserts they
   `build_processing`, `write_processing_json`, `build_dependency_graph`,
   `collect_upstream_process_names`, `reject_ephemeral_paths`, `resource_usage`,
   `collect_static_resources`, `library_version`, `pipeline_code`, `pipeline_name_from_env`,
-  `PROCESSING_JSON`, `EPHEMERAL_PATH_MARKER`, and the `PIPELINE_*_ENV` constants.
+  `file_sha256`, `model_provenance`, `PROCESSING_JSON`, `EPHEMERAL_PATH_MARKER`, and the
+  `PIPELINE_*_ENV` and `MODEL_SOURCE_*` constants.
   - **Code identity is derived, not supplied.** `build_code` takes a required keyword-only
     `library_name` and resolves `code.version` from `importlib.metadata` and `code.url` from the
     GitHub org path. Caller-supplied `url=` / `version=` parameters were removed rather than
@@ -88,6 +89,12 @@ submodule. Both spellings are supported; `tests/test_public_api.py` asserts they
     the repeated edges are the real shape of what produced these inputs. The schema validates the
     graph's keys but never its values, which is what lets a single-process document name upstreams
     living in other documents.
+  - **`model_provenance` records, it does not verify.** It hashes the model files a run loaded so
+    they can go into `code.parameters`, and deliberately compares nothing: no expected digest, no
+    failure on mismatch. Stating which bytes were used is a different job from policing them, and
+    the model loader is what should fail on a missing model. An absent file is logged and omitted.
+    `source_name` is a caller-supplied logical label rather than the resolved path, because a task
+    scratch directory does not outlive the task.
   - `reject_ephemeral_paths` raises on a `/tmp/nxf.*` scratch path anywhere in `parameters`,
     `input_data` or `output_path`. Such a path points at a directory destroyed when the task ends,
     which is worse than an absent field because it reads as real provenance.

@@ -8,6 +8,7 @@ parameters, timings); this module assembles the ``Code`` / ``DataProcess`` /
 populated and the on-disk format matches other v2 artifacts).
 """
 
+import hashlib
 import importlib.metadata
 import logging
 import os
@@ -15,7 +16,7 @@ import platform as platform_mod
 import re
 from datetime import datetime as dt
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from aind_data_schema.components.identifiers import Code, DataAsset
 from aind_data_schema.core.processing import (
@@ -41,6 +42,12 @@ LIBRARY_URL_TEMPLATE = "https://github.com/AllenNeuralDynamics/{name}"
 # ``/tmp/nxf.<random>``. Those paths are deleted when the task ends, so they
 # are meaningless in a permanent metadata document.
 EPHEMERAL_PATH_MARKER = "/tmp/nxf."
+
+#: Model bytes were already present locally when the loader ran.
+MODEL_SOURCE_ASSET = "code_ocean_data_asset"
+
+#: Model bytes were downloaded at runtime by the loader.
+MODEL_SOURCE_NETWORK = "network_download"
 _EPHEMERAL_PATH_RE = re.compile(r"^/tmp/nxf\.")
 
 # Sources for the container's memory limit: cgroup v2 first, then v1.
@@ -604,3 +611,91 @@ def write_processing_json(processing: Processing, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     processing.write_standard_file(output_directory=str(output_dir))
     return output_dir / PROCESSING_JSON
+
+
+def file_sha256(path: Path) -> str:
+    """Return the SHA-256 hex digest of a file's bytes.
+
+    Read in chunks so a multi-hundred-megabyte model file does not have to be
+    held in memory.
+
+    Parameters
+    ----------
+    path : Path
+        File to hash.
+
+    Returns
+    -------
+    str
+        Lowercase hex digest.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def model_provenance(
+    directory: Path,
+    filenames: Iterable[str],
+    *,
+    source_name: str,
+    source: str = MODEL_SOURCE_ASSET,
+) -> List[Dict[str, str]]:
+    """Describe the model files a run actually loaded, for ``code.parameters``.
+
+    This records provenance; it does **not** verify integrity. No expected
+    digest is compared and a mismatch cannot be detected here, because the
+    point is to state which bytes were used, not to police them. A file that
+    is absent is skipped rather than raising -- the model loader is what
+    should fail on a missing model, with its own message.
+
+    ``source_name`` is a stable logical label chosen by the caller, never the
+    resolved filesystem path: a task scratch directory does not survive the
+    task, so recording one would read as provenance while pointing at
+    nothing.
+
+    Parameters
+    ----------
+    directory : Path
+        Directory the files were loaded from.
+    filenames : iterable of str
+        File names to describe, relative to ``directory``.
+    source_name : str
+        Stable logical label recorded against every file.
+    source : str, optional
+        How the bytes were obtained; :data:`MODEL_SOURCE_ASSET` by default,
+        or :data:`MODEL_SOURCE_NETWORK` when a download supplied them.
+
+    Returns
+    -------
+    list of dict
+        One record per file found, each with ``filename``, ``sha256``,
+        ``source_name`` and ``source``.
+
+    Raises
+    ------
+    ValueError
+        If ``source_name`` is a Nextflow task scratch path.
+    """
+    reject_ephemeral_paths(source_name, "source_name")
+    records: List[Dict[str, str]] = []
+    for filename in filenames:
+        path = Path(directory) / filename
+        if not path.is_file():
+            logger.warning(
+                "Model file %s not found under %s; omitting from provenance",
+                filename,
+                directory,
+            )
+            continue
+        records.append(
+            {
+                "filename": filename,
+                "sha256": file_sha256(path),
+                "source_name": source_name,
+                "source": source,
+            }
+        )
+    return records
