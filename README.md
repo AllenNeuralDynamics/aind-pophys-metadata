@@ -7,120 +7,121 @@
 ![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue?logo=python)
 
-Shared `aind-data-schema` v1/v2 metadata reads and `Processing` / `QualityControl` output builders.
+Shared `aind-data-schema` metadata reads and `Processing` / `QualityControl` output builders.
 
-Reading a v1 `session.json` or a v2 `acquisition.json`, deciding which one you have, and emitting a
-schema-valid `processing.json` are implemented here once, so that no caller has to reimplement them.
+## Modules
 
-## Schema version dispatch
+- **`core`** — `CoreMetadata`, the central class that loads metadata files and provides schema-version agnostic
+  getters. Constructed once with `CoreMetadata.load(input_dir)`
+  - The readers behind those methods are **private**. Most come in `_v1` / `_v2` / `_minimal` triples
+    chosen by the detected version; a few fields are spelled the same in every version and need no
+    branch at all.
+  - currently supported fields are:
+    - frame_rate
+    - instrument_id
+    - subject_id
+    - dataset_name
+    - plane_records — one dict per imaging plane
+    - fov_ids — canonical plane ids, ordered by plane index
+    - um_per_pixel
+    - excitation_wavelength
+    - emission_wavelength
+    - epoch_records — one dict per stimulus epoch, in the order recorded
+
+- **`io`** — filesystem, paths, and JSON only: finds metadata files in an input directory, detects
+  the schema version from the filename, reads raw dicts.
+
+- **`naming`** — plane and FOV id construction. Version independent by construction: these take
+  already-extracted indices and acronyms, never direct metadata.
+
+- **`processing`** — builds a V2 schema-valid `processing.json`: the `Code` block, complete `DataProcess` objects,
+  `dependency_graph` assembled from upstream steps, pipeline metadata read from the
+  `PIPELINE_*` environment variables, and `model_provenance` hashes recording which model files a run
+  loaded, when relevant.
+
+- **`quality_control`** — builds a full `quality_control.json` from metrics a capsule collects,
+  including pending review metrics for QC Portal.
+
+- **`runner`** — `stage_guard`, a context manager that times a stage and writes its `processing.json`
+  on both the success and the failure path. `StageContext` is the handle a body uses to record
+  output parameters, notes, upstream names, input data, parameters and resources mid-run.
+
+## aind-data-schema version agnostic
 
 **Version is determined by file presence, not by parsing `schema_version`:** `session.json` means
-v1, `acquisition.json` means v2. Both present is ambiguous and raises. An unrecognised core filename
-raises rather than defaulting to v2.
+v1, `acquisition.json` means v2, `metadata.json` means minimal. Both a v1 and a v2 file present is
+ambiguous and raises. A `metadata.json` alongside either one is ignored.
 
-`load_common(input_dir)` performs the whole find-core-file / detect-version / load-optional-siblings
-preamble once and returns a **frozen** `CommonMetadata` carrying `version`, `core_path`, `core_raw`
-and the optional `platform_raw` / `subject_raw` / `data_description_raw`. Callers spread it into
-their own dataclass; there is deliberately no shared base class, because the fields a caller needs
-vary too widely for one to fit.
+`CoreMetadata` is intended to be the **only** place in the pophys architecture that compares a schema version.
 
-Getters take the version as an argument, so a caller can thread the token through to them instead of
-branching on it.
+The invariant is mechanical, and worth keeping that way. Run it from the directory holding the repos —
+inside a single repo the `*/src` glob matches nothing and reports a false pass:
+
+```bash
+grep -rn 'SchemaVersion\|SCHEMA_' */src | grep -v aind-pophys-metadata   # must be empty
+```
+
+`CoreMetadata.load(input_dir)` performs the find-core-files and detect-version task once and returns a **frozen** object carrying `version`, `core_path`,
+`core_raw` and the optional `platform_raw` / `subject_raw` / `data_description_raw` dicts.
 
 Input files are read as **raw dicts**. Nothing here validates an input document just to read a field
 from it, so metadata that is messy but sufficient still runs.
 
-## Modules
+## The minimal `metadata.json`
 
-Every name in `__all__` is re-exported from the package root and is equally importable from its own
-submodule. Both spellings are supported; `tests/test_public_api.py` asserts they stay in step.
+This package also reads a `metadata.json`, for producers with no `aind-data-schema` core files at all.
 
-- **`io`** — file discovery, schema-version dispatch, raw JSON reads, discriminator resolution.
-  Exports `load_common`, `find_acquisition_file`, `detect_schema_version`, `find`, `load_optional`,
-  `load_json`, `require`, `object_type_value`, `CommonMetadata`, and the `SCHEMA_V1` / `SCHEMA_V2`
-  and core-filename constants.
-
-- **`fields`** — field-level v1/v2 getters. Exports `resolve_frame_rate`, `get_frame_rate` (with its
-  `_v1` / `_v2` / `_platform` variants), `get_fov_ids`, `build_fov_ids`, `fov_id`,
-  `get_fov_pairs_v1` / `_v2`, `get_instrument_id`, `get_subject_id`, `get_dataset_name`,
-  `acronym_from_targeted_structure`, `as_int`, `validate_scavenged_ids`, and the `SCAVENGE_MODE_*`
-  constants.
-  - `resolve_frame_rate` folds the core-file → `platform.json` → CLI-override → raise ladder into
-    one call with one error message.
-  - `validate_scavenged_ids` **warns, never raises.** Uniqueness of scavenged ids is the hard
-    requirement and directory names already guarantee it, so divergence from the canonical set must
-    not kill a run. Pass `SCAVENGE_MODE_SINGLE` when the caller scavenges a single id and the
-    canonical set holds many; the default `SCAVENGE_MODE_ALL` compares the two as sets.
-  - `as_int` returns `None` for an absent, null or uncoercible value rather than raising, because an
-    explicit JSON `null` is distinct from a missing key and a bare `int(...)` would fail on a field
-    a real asset is allowed to leave blank.
-
-- **`paths`** — glob-with-a-default input discovery and provenance-safe relative paths. Exports
-  `find_one`, `relative_to_root`.
-  - `find_one(directory, pattern, recursive=, required=)` replaces a bare `next(glob(...))`, which
-    raises a context-free `StopIteration` the moment an expected file is renamed.
-  - `relative_to_root` resolves both sides first, so a symlinked root still yields a relative
-    result. A path genuinely outside the root comes back resolved and absolute, so provenance is
-    never reduced to a bare relative fragment.
-
-- **`processing`** — `processing.json` builders. Exports `build_code`, `build_data_process`,
-  `build_processing`, `write_processing_json`, `build_dependency_graph`,
-  `collect_upstream_process_names`, `reject_ephemeral_paths`, `resource_usage`,
-  `collect_static_resources`, `library_version`, `pipeline_code`, `pipeline_name_from_env`,
-  `file_sha256`, `model_provenance`, `PROCESSING_JSON`, `EPHEMERAL_PATH_MARKER`, and the
-  `PIPELINE_*_ENV` and `MODEL_SOURCE_*` constants.
-  - **Code identity is derived, not supplied.** `build_code` takes a required keyword-only
-    `library_name` and resolves `code.version` from `importlib.metadata` and `code.url` from the
-    GitHub org path. Caller-supplied `url=` / `version=` parameters were removed rather than
-    accepted-and-ignored, so a stale call site fails loudly instead of emitting an unidentifiable
-    `Code`.
-  - **`DataProcess.name` must be unique within a document** — it is the `dependency_graph` key, and
-    `Processing.validate_process_graph` rejects duplicates. Passing `plane_id=` composes
-    `"{plane_id}: {base}"`; a caller writing one document per run passes an explicit distinct `name`
-    instead.
-  - **`Processing.pipelines` and `DataProcess.pipeline_name` are written together or not at all**, as
-    the schema validates that the name resolves to an entry in the list. Both derive from the
-    `PIPELINE_NAME` / `PIPELINE_URL` / `PIPELINE_VERSION` environment variables: all three set means
-    populated, all three absent means omitted with a warning, and a partial set raises.
-  - **`dependency_graph` is built from siblings.** `collect_upstream_process_names(input_dir)` treats
-    every `processing.json` present in the input directory as an upstream dependency, with no
-    ordering and no attempt to tell a parent from a grandparent — if two upstream documents both
-    reached these inputs, both are equally upstream. Do not deduplicate to one edge per step type;
-    the repeated edges are the real shape of what produced these inputs. The schema validates the
-    graph's keys but never its values, which is what lets a single-process document name upstreams
-    living in other documents.
-  - **`model_provenance` records, it does not verify.** It hashes the model files a run loaded so
-    they can go into `code.parameters`, and deliberately compares nothing: no expected digest, no
-    failure on mismatch. Stating which bytes were used is a different job from policing them, and
-    the model loader is what should fail on a missing model. An absent file is logged and omitted.
-    `source_name` is a caller-supplied logical label rather than the resolved path, because a task
-    scratch directory does not outlive the task.
-  - `reject_ephemeral_paths` raises on a `/tmp/nxf.*` scratch path anywhere in `parameters`,
-    `input_data` or `output_path`. Such a path points at a directory destroyed when the task ends,
-    which is worse than an absent field because it reads as real provenance.
-
-- **`quality_control`** — `quality_control.json` builders. Exports `build_quality_control`,
-  `write_quality_control_json`, `dropdown_metric`, `pending_qc_status`, `DEFAULT_GROUPING`,
-  `QUALITY_CONTROL_JSON`.
-  - `build_quality_control` emits a full document with `default_grouping=["evaluation"]`, so every
-    metric needs an `"evaluation"` tag. Every metric also needs a non-empty `status_history`, or
-    deriving the document status raises `IndexError`.
-  - A pending `DropdownMetric` always carries `value=""`, and `dropdown_metric` exposes no `value`
-    parameter at all: a preselected value on a metric whose status is pending renders in QC Portal
-    as already answered, so the reviewer never opens it.
-
-- **`runner`** — the stage guard that writes `processing.json` on both the success and the failure
-  path. Exports `stage_guard`, `StageContext`, `EVENT_TYPE_FIELD`, `STAGE_START`, `STAGE_COMPLETE`,
-  `STAGE_ERROR`.
-  - The guard times the stage and re-raises whatever the body raised. Ordering is deliberate:
-    `stage_complete` is logged only after the write succeeds, so monitoring never records success
-    for a stage that produced no document.
-  - If the write fails while the body is already failing, the write error is logged and the
-    **body's** exception propagates, since that one is the diagnostic worth keeping.
-  - `StageContext` is the handle a body uses to record `output_parameters`, `notes`,
-    `upstream_names`, `input_data`, `parameters` and `resources` mid-run.
+Example:
+```json
+{
+  "frame_rate": 9.48,
+  "instrument_id": "MESO.1",
+  "subject_id": "772414",
+  "dataset_name": "single-plane-ophys_772414_2025-04-11_17-41-16",
+  "excitation_nm": 920,
+  "emission_nm": 514,
+  "planes": [
+    {
+      "plane_index": 0,
+      "structure": "VISp",
+      "depth": 150,
+      "depth_unit": "micrometer",
+      "um_per_pixel": 0.78,
+      "width": 512,
+      "height": 512
+    }
+  ],
+  "epochs": [
+    {
+      "stimulus_name": "spontaneous activity",
+      "start_time": "2025-04-11T17:49:00-07:00",
+      "tiff_stem": "spont",
+      "modalities": ["None"]
+    }
+  ]
+}
+```
 
 ## Usage
+
+Reading metadata — locate the file(s) once, then ask it for fields:
+
+```python
+from aind_pophys_metadata import CoreMetadata
+
+metadata = CoreMetadata.load(input_dir)
+
+frame_rate = metadata.get_frame_rate(required=True)
+instrument_id = metadata.get_instrument_id()
+fov_ids = metadata.get_fov_ids()
+um_per_pixel = metadata.get_um_per_pixel()
+planes = metadata.get_plane_records()
+epochs = metadata.get_epoch_records()
+```
+
+The same code reads a v1 `session.json`, a v2 `acquisition.json` and a minimal `metadata.json`.
+
+Writing outputs — `stage_guard` emits a `processing.json` on both the success and the failure path:
 
 ```python
 from aind_data_schema_models.process_names import ProcessName
@@ -187,8 +188,3 @@ argument and return type annotations.
 - [x] Supported: We are releasing this code to the public as a tool we expect others to use. Issues
   are welcomed, and we expect to address them promptly; pull requests will be vetted by our staff
   before inclusion.
-
-## Release Status
-
-Pre-release. This package is consumed by git commit rather than from PyPI, so the version is
-informational until the first tagged release.

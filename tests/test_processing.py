@@ -25,6 +25,7 @@ from aind_pophys_metadata import processing
 # An installed distribution, so the version resolver has something real
 # to find; the library under test is always installed in its own test run.
 _INSTALLED_LIBRARY = "aind-pophys-metadata"
+_URL = "https://github.com/AllenNeuralDynamics/aind-pophys-metadata"
 
 _START = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
 _END = datetime(2024, 1, 1, 12, 30, tzinfo=timezone.utc)
@@ -36,12 +37,12 @@ class TestProcessing(unittest.TestCase):
     def _code(self) -> Code:
         """Build a minimal Code block for reuse."""
         return processing.build_code(
-            name="Example", library_name=_INSTALLED_LIBRARY
+            url=_URL, name="Example", library_name=_INSTALLED_LIBRARY
         )
 
-    def test_resource_usage(self) -> None:
-        """resource_usage reports OS, architecture, and cores."""
-        ru = processing.resource_usage()
+    def test_static_resources(self) -> None:
+        """collect_static_resources reports OS, architecture, cores."""
+        ru = processing.collect_static_resources()
         self.assertIsInstance(ru, ResourceUsage)
         self.assertTrue(ru.os)
         self.assertTrue(ru.architecture)
@@ -55,6 +56,7 @@ class TestProcessing(unittest.TestCase):
     def test_build_code_with_input_data(self) -> None:
         """input_data names are wrapped and language_version is honored."""
         code = processing.build_code(
+            url=_URL,
             name="n",
             library_name=_INSTALLED_LIBRARY,
             parameters={"a": 1},
@@ -87,7 +89,7 @@ class TestProcessing(unittest.TestCase):
             output_path="results/",
             output_parameters={"m": 1},
             notes="ok",
-            resources=processing.resource_usage(),
+            resources=processing.collect_static_resources(),
             pipeline_name="pipe",
         )
         self.assertEqual(dp.name, "step")
@@ -192,7 +194,7 @@ class TestPipelineIdentity(unittest.TestCase):
     def _code(self) -> Code:
         """Build a minimal Code block for reuse."""
         return processing.build_code(
-            name="Example", library_name=_INSTALLED_LIBRARY
+            url=_URL, name="Example", library_name=_INSTALLED_LIBRARY
         )
 
     def _data_process(self) -> object:
@@ -293,93 +295,6 @@ class TestPipelineIdentity(unittest.TestCase):
         self.assertEqual(dp.pipeline_name, "explicit")
 
 
-class TestBuildCodeHardening(unittest.TestCase):
-    """Library-authoritative url/version and the ephemeral-path guard."""
-
-    def test_version_comes_from_the_installed_library(self) -> None:
-        """code.version is the backing library's released version."""
-        code = processing.build_code(
-            name="n", library_name=_INSTALLED_LIBRARY
-        )
-        self.assertEqual(
-            code.version,
-            importlib.metadata.version(_INSTALLED_LIBRARY),
-        )
-
-    def test_url_is_the_library_landing_page(self) -> None:
-        """code.url names the library, so url and version agree."""
-        code = processing.build_code(
-            name="n", library_name=_INSTALLED_LIBRARY
-        )
-        self.assertEqual(
-            code.url,
-            processing.LIBRARY_URL_TEMPLATE.format(name=_INSTALLED_LIBRARY),
-        )
-
-    def test_version_environment_variable_is_ignored(self) -> None:
-        """A capsule wrapper's VERSION never reaches the document."""
-        with patch.dict(os.environ, {"VERSION": "9.9.9"}):
-            code = processing.build_code(
-                name="n", library_name=_INSTALLED_LIBRARY
-            )
-        self.assertNotEqual(code.version, "9.9.9")
-
-    def test_missing_package_warns_and_never_raises(self) -> None:
-        """An uninstalled library yields an empty version, not an error."""
-        with self.assertLogs(processing.logger, level="WARNING") as logs:
-            code = processing.build_code(
-                name="n", library_name="not-a-real-distribution"
-            )
-        self.assertEqual(code.version, "")
-        # The url stays correct even when the version is unknowable.
-        self.assertEqual(
-            code.url,
-            processing.LIBRARY_URL_TEMPLATE.format(
-                name="not-a-real-distribution"
-            ),
-        )
-        self.assertTrue(
-            any("not-a-real-distribution" in m for m in logs.output)
-        )
-
-    def test_library_name_is_required(self) -> None:
-        """Omitting library_name fails loudly at the call, not silently."""
-        with self.assertRaises(TypeError):
-            processing.build_code(name="n")
-
-    def test_retired_arguments_are_rejected(self) -> None:
-        """A stale url=/version= call site raises rather than misleading."""
-        for stale in ({"url": "https://example.com/capsule"},
-                      {"version": "1.2.3"}):
-            with self.subTest(stale=stale):
-                with self.assertRaises(TypeError):
-                    processing.build_code(
-                        name="n",
-                        library_name=_INSTALLED_LIBRARY,
-                        **stale,
-                    )
-
-    def test_ephemeral_path_in_parameters_raises(self) -> None:
-        """A Nextflow scratch path in parameters is rejected by key."""
-        with self.assertRaises(ValueError) as ctx:
-            processing.build_code(
-                name="n",
-                library_name=_INSTALLED_LIBRARY,
-                parameters={"movie": "/tmp/nxf.AbCd/movie.h5"},
-            )
-        self.assertIn("parameters.movie", str(ctx.exception))
-
-    def test_ephemeral_path_in_input_data_raises(self) -> None:
-        """A Nextflow scratch path in input_data is rejected by index."""
-        with self.assertRaises(ValueError) as ctx:
-            processing.build_code(
-                name="n",
-                library_name=_INSTALLED_LIBRARY,
-                input_data=["ok", "/tmp/nxf.9/x"],
-            )
-        self.assertIn("input_data[1]", str(ctx.exception))
-
-
 class TestLibraryVersion(unittest.TestCase):
     """The standalone backing-library version resolver."""
 
@@ -395,62 +310,6 @@ class TestLibraryVersion(unittest.TestCase):
         with self.assertLogs(processing.logger, level="WARNING") as logs:
             self.assertEqual(processing.library_version("nope-not-real"), "")
         self.assertEqual(len(logs.output), 1)
-
-    def test_ephemeral_output_path_raises(self) -> None:
-        """A Nextflow scratch path in output_path is rejected too."""
-        with self.assertRaises(ValueError) as ctx:
-            processing.build_data_process(
-                process_type=ProcessName.OTHER,
-                code=processing.build_code(
-                    name="n", library_name=_INSTALLED_LIBRARY
-                ),
-                start_time=_START,
-                end_time=_END,
-                output_path="/tmp/nxf.AbCd/work/plane_0",
-            )
-        self.assertIn("output_path", str(ctx.exception))
-
-    def test_ephemeral_output_path_as_path_object_raises(self) -> None:
-        """A Path-valued output_path is coerced before the scan."""
-        with self.assertRaises(ValueError):
-            processing.build_data_process(
-                process_type=ProcessName.OTHER,
-                code=processing.build_code(
-                    name="n", library_name=_INSTALLED_LIBRARY
-                ),
-                start_time=_START,
-                end_time=_END,
-                output_path=Path("/tmp/nxf.AbCd/work"),
-            )
-
-
-class TestRejectEphemeralPaths(unittest.TestCase):
-    """The standalone ephemeral-path guard."""
-
-    def test_nested_containers_are_walked(self) -> None:
-        """A path nested in a dict inside a list is still caught."""
-        with self.assertRaises(ValueError) as ctx:
-            processing.reject_ephemeral_paths(
-                {"a": [{"b": "/tmp/nxf.zz/f"}]}, "root"
-            )
-        self.assertIn("root.a[0].b", str(ctx.exception))
-
-    def test_embedded_marker_is_caught(self) -> None:
-        """A scratch path that is not at the start of the string is caught."""
-        with self.assertRaises(ValueError):
-            processing.reject_ephemeral_paths("file:///tmp/nxf.q/f")
-
-    def test_unnamed_offender_reads_as_value(self) -> None:
-        """With no key, the message falls back to a generic label."""
-        with self.assertRaises(ValueError) as ctx:
-            processing.reject_ephemeral_paths("/tmp/nxf.q/f")
-        self.assertIn("'value'", str(ctx.exception))
-
-    def test_clean_values_pass(self) -> None:
-        """Non-strings and ordinary paths are accepted."""
-        processing.reject_ephemeral_paths(
-            {"n": 1, "p": "/results/plane_0", "t": (None, 2.5)}
-        )
 
 
 class TestStaticResources(unittest.TestCase):
@@ -562,19 +421,7 @@ class TestModelProvenance(unittest.TestCase):
                 source_name="cellpose.org",
                 source=processing.MODEL_SOURCE_NETWORK,
             )
-        self.assertEqual(
-            records[0]["source"], processing.MODEL_SOURCE_NETWORK
-        )
-
-    def test_ephemeral_source_name_is_rejected(self) -> None:
-        """A scratch label would point at nothing after the task."""
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "net").write_bytes(b"a")
-            with self.assertRaises(ValueError):
-                processing.model_provenance(
-                    root, ["net"], source_name="/tmp/nxf.abc/models"
-                )
+        self.assertEqual(records[0]["source"], processing.MODEL_SOURCE_NETWORK)
 
 
 class TestDependencyGraph(unittest.TestCase):
@@ -669,7 +516,7 @@ class TestDependencyGraph(unittest.TestCase):
         dp = processing.build_data_process(
             process_type=ProcessName.VIDEO_MOTION_CORRECTION,
             code=processing.build_code(
-                name="n", library_name=_INSTALLED_LIBRARY
+                url=_URL, name="n", library_name=_INSTALLED_LIBRARY
             ),
             start_time=_START,
             end_time=_END,
@@ -683,3 +530,52 @@ class TestDependencyGraph(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBuildCodeIdentity(unittest.TestCase):
+    """Where ``Code.url`` and ``Code.version`` come from."""
+
+    def test_version_comes_from_the_installed_library(self) -> None:
+        """code.version is the backing library's released version."""
+        code = processing.build_code(
+            url=_URL, name="n", library_name=_INSTALLED_LIBRARY
+        )
+        self.assertEqual(
+            code.version, importlib.metadata.version(_INSTALLED_LIBRARY)
+        )
+
+    def test_url_is_whatever_the_caller_supplied(self) -> None:
+        """Only the consuming repo knows where its own code lives."""
+        code = processing.build_code(
+            url="https://example.invalid/some-repo",
+            name="n",
+            library_name=_INSTALLED_LIBRARY,
+        )
+        self.assertEqual(code.url, "https://example.invalid/some-repo")
+
+    def test_version_environment_variable_is_ignored(self) -> None:
+        """A capsule wrapper's VERSION never reaches the document."""
+        with patch.dict(os.environ, {"VERSION": "9.9.9"}):
+            code = processing.build_code(
+                url=_URL, name="n", library_name=_INSTALLED_LIBRARY
+            )
+        self.assertNotEqual(code.version, "9.9.9")
+
+    def test_missing_package_warns_and_never_raises(self) -> None:
+        """An uninstalled library yields an empty version, not an error."""
+        with self.assertLogs(processing.logger, level="WARNING") as logs:
+            code = processing.build_code(
+                url=_URL, name="n", library_name="not-a-real-distribution"
+            )
+        self.assertEqual(code.version, "")
+        self.assertEqual(code.url, _URL)
+        self.assertTrue(
+            any("not-a-real-distribution" in m for m in logs.output)
+        )
+
+    def test_library_name_and_url_are_required(self) -> None:
+        """Neither can be defaulted; both identify the code that ran."""
+        with self.assertRaises(TypeError):
+            processing.build_code(name="n", url=_URL)
+        with self.assertRaises(TypeError):
+            processing.build_code(name="n", library_name=_INSTALLED_LIBRARY)

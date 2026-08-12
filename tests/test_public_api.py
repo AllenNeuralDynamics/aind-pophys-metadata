@@ -6,9 +6,9 @@ import unittest
 import aind_pophys_metadata
 
 SUBMODULES = (
-    "fields",
+    "core",
     "io",
-    "paths",
+    "naming",
     "processing",
     "quality_control",
     "runner",

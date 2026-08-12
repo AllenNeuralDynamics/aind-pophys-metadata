@@ -1,32 +1,132 @@
-"""Filesystem and schema-version helpers at the aind-data-schema boundary.
-
-Shared, capsule-agnostic I/O for reading AIND metadata:
-
-- locate the core acquisition file under an input directory,
-- dispatch schema version by which core file is present
-  (``session.json`` -> v1, ``acquisition.json`` -> v2 — the v1->v2 rename is
-  the authoritative version signal, so no ``schema_version`` field is read),
-- read raw JSON dicts (no Pydantic validation on the read path),
-- resolve v2 ``object_type`` discriminators from the schema classes
-  themselves, so they track the installed aind-data-schema version.
-"""
+"""Filesystem, JSON and path helpers, and schema-version detection."""
 
 import json
-from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from aind_pophys_metadata.paths import find_one
 
-SCHEMA_V1 = "v1"
-SCHEMA_V2 = "v2"
+class SchemaVersion(str, Enum):
+    """Which metadata schema a core document is written in.
+
+    An enum so an unrecognised version cannot exist past construction.
+    Subclasses ``str``, so a member formats and compares as its value.
+    """
+
+    V1 = "v1"
+    V2 = "v2"
+    MINIMAL = "minimal"
+
+    __str__ = str.__str__
+
+
+# Readable spellings of the members, used throughout for symmetry with the
+# core-filename constants below.
+SCHEMA_V1 = SchemaVersion.V1
+SCHEMA_V2 = SchemaVersion.V2
+SCHEMA_MINIMAL = SchemaVersion.MINIMAL
 
 V1_CORE_FILE = "session.json"
 V2_CORE_FILE = "acquisition.json"
+MINIMAL_CORE_FILE = "metadata.json"
+
+# Ordered so the richest available document wins when more than one is present.
+_CORE_FILE_VERSIONS = (
+    (V2_CORE_FILE, SCHEMA_V2),
+    (V1_CORE_FILE, SCHEMA_V1),
+    (MINIMAL_CORE_FILE, SCHEMA_MINIMAL),
+)
 
 PLATFORM_FILE = "platform.json"
 SUBJECT_FILE = "subject.json"
 DATA_DESCRIPTION_FILE = "data_description.json"
+
+
+def find_one(
+    directory: Path,
+    pattern: str,
+    recursive: bool = True,
+    required: bool = True,
+) -> Optional[Path]:
+    """Return the first sorted match for ``pattern``, or ``None``/raise.
+
+    Every glob should go through here so no ``next(glob(...))`` is ever left
+    without a default: a bare ``StopIteration`` carries no filename and no
+    directory, which is the least debuggable way for a pipeline to fail the
+    moment an upstream capsule renames an artifact - exactly what a schema
+    migration does.
+
+    Parameters
+    ----------
+    directory : pathlib.Path
+        Directory to search.
+    pattern : str
+        Glob pattern to match.
+    recursive : bool, optional
+        Search subdirectories too. Note ``rglob`` does not follow symlinks on
+        Python <= 3.12, so pass ``False`` and glob the exact directory when
+        the target sits behind one.
+    required : bool, optional
+        Raise when nothing matches instead of returning ``None``.
+
+    Returns
+    -------
+    pathlib.Path or None
+        The lexicographically first match, or ``None`` when nothing matched
+        and ``required`` is False. Matches are sorted before selection
+        because ``glob``/``rglob`` yield in filesystem order, which differs
+        between machines and between runs - an unstable pick is not
+        reproducible provenance.
+
+    Raises
+    ------
+    FileNotFoundError
+        If nothing matched and ``required`` is True. The message names both
+        the pattern and the directory.
+    """
+    directory = Path(directory)
+    matches = (
+        directory.rglob(pattern) if recursive else directory.glob(pattern)
+    )
+    match = next(iter(sorted(matches)), None)
+    if match is None and required:
+        raise FileNotFoundError(
+            f"No file matching {pattern!r} found under {directory}"
+        )
+    return match
+
+
+def relative_to_root(root: Path, path: Path) -> str:
+    """Return ``path`` relative to ``root``, as a string.
+
+    Both sides are resolved first. Inside the pipeline ``/results`` and
+    ``/data`` are symlinks into the task work directory, so comparing a
+    resolved root against an unresolved path raises ``ValueError`` and leaks
+    an absolute container path (e.g. ``/results/VISp_0/dff``) into the
+    metadata.
+
+    Parameters
+    ----------
+    root : pathlib.Path
+        Directory the result should be relative to (the results or data root).
+    path : pathlib.Path
+        Path to express relative to ``root``.
+
+    Returns
+    -------
+    str
+        ``path`` relative to ``root``, or the resolved absolute ``path`` when
+        it is genuinely outside ``root`` (so provenance is never dropped
+        entirely).
+    """
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(Path(root).resolve()))
+    except ValueError:
+        # Resolved, not the caller's input: a relative path outside the root
+        # would otherwise be recorded as another relative path, which says
+        # nothing about where the file actually is.
+        return str(resolved)
 
 
 def load_json(path: Path) -> dict:
@@ -46,26 +146,8 @@ def load_json(path: Path) -> dict:
         return json.load(f)
 
 
-def find(input_dir: Path, name: str) -> Optional[Path]:
-    """Return the first recursive match for ``name``, or ``None``.
-
-    Parameters
-    ----------
-    input_dir : Path
-        Directory searched recursively.
-    name : str
-        Exact file name to match.
-
-    Returns
-    -------
-    Path or None
-        The first match, or ``None`` if there is none.
-    """
-    return find_one(input_dir, name, recursive=True, required=False)
-
-
 def require(blob: dict, key: str, file_path: Path) -> Any:
-    """Return ``blob[key]`` or raise a KeyError naming the field and file.
+    """Return ``blob[key]`` or raise, naming the field and file.
 
     Parameters
     ----------
@@ -83,21 +165,24 @@ def require(blob: dict, key: str, file_path: Path) -> Any:
 
     Raises
     ------
-    KeyError
-        If ``key`` is not present in ``blob``.
+    ValueError
+        If ``key`` is not present in ``blob``. ValueError throughout, so a
+        caller catches one type for every missing-field failure.
     """
     if key not in blob:
-        raise KeyError(
+        raise ValueError(
             f"Required field '{key}' missing from {Path(file_path).name}"
         )
     return blob[key]
 
 
-def find_acquisition_file(input_dir: Path) -> Path:
-    """Locate the core v1/v2 acquisition file under ``input_dir``.
+def find_core_file(input_dir: Path) -> Path:
+    """Locate the core acquisition file under ``input_dir``.
 
-    Prefers v2 ``acquisition.json``; falls back to v1 ``session.json``.
-    Raises if both are present (ambiguous) or neither is.
+    Prefers v2 ``acquisition.json``, then v1 ``session.json``, then the
+    minimal ``metadata.json``. A ``metadata.json`` beside a v1 or v2 file is
+    ignored rather than called ambiguous, since raw assets routinely ship the
+    whole-record export under that name.
 
     Parameters
     ----------
@@ -114,80 +199,58 @@ def find_acquisition_file(input_dir: Path) -> Path:
     ValueError
         If both ``acquisition.json`` and ``session.json`` are present.
     FileNotFoundError
-        If neither file is present.
+        If none of the three core files is present.
     """
     input_dir = Path(input_dir)
     acq_matches = sorted(input_dir.rglob(V2_CORE_FILE))
     session_matches = sorted(input_dir.rglob(V1_CORE_FILE))
-    matches = acq_matches + session_matches
-    if len(matches) > 1:
+    schema_matches = acq_matches + session_matches
+    if len(schema_matches) > 1:
         raise ValueError(
             "Ambiguous input: found multiple core metadata files under "
-            f"{input_dir}: {', '.join(map(str, matches))}. "
+            f"{input_dir}: {', '.join(map(str, schema_matches))}. "
             "Keep exactly one session.json or acquisition.json."
         )
-    if matches:
-        return matches[0]
+    if schema_matches:
+        return schema_matches[0]
+    minimal_matches = sorted(input_dir.rglob(MINIMAL_CORE_FILE))
+    if len(minimal_matches) > 1:
+        raise ValueError(
+            f"Ambiguous input: found multiple {MINIMAL_CORE_FILE} files "
+            f"under {input_dir}: {', '.join(map(str, minimal_matches))}."
+        )
+    if minimal_matches:
+        return minimal_matches[0]
     raise FileNotFoundError(
-        f"No {V2_CORE_FILE} (v2) or {V1_CORE_FILE} (v1) found under "
-        f"{input_dir}"
+        f"No {V2_CORE_FILE} (v2), {V1_CORE_FILE} (v1) or "
+        f"{MINIMAL_CORE_FILE} (minimal) found under {input_dir}"
     )
 
 
-def detect_schema_version(core_file: Path) -> str:
-    """Return ``"v1"`` or ``"v2"`` from a core file's name.
+def detect_schema_version(core_file: Path) -> SchemaVersion:
+    """Return the schema version a core file's name declares.
 
     Parameters
     ----------
     core_file : Path
         Path to the core acquisition file (typically from
-        :func:`find_acquisition_file`).
+        :func:`find_core_file`).
 
     Returns
     -------
-    str
-        :data:`SCHEMA_V1` for ``session.json``, else :data:`SCHEMA_V2`.
+    SchemaVersion
+        The member the file name maps to.
+
+    Raises
+    ------
+    ValueError
+        If the file name is not one of the three recognised core files.
     """
     name = Path(core_file).name
-    if name == V1_CORE_FILE:
-        return SCHEMA_V1
-    if name == V2_CORE_FILE:
-        return SCHEMA_V2
+    for core_name, version in _CORE_FILE_VERSIONS:
+        if name == core_name:
+            return version
     raise ValueError(f"Unsupported core metadata file: {core_file}")
-
-
-@dataclass(frozen=True)
-class CommonMetadata:
-    """Raw dicts and version every capsule's metadata read starts from.
-
-    Deliberately *not* a base class for capsule metadata dataclasses. The
-    capsules consume anywhere from 3 to 21 fields, so each spreads this
-    result into its own dataclass rather than inheriting a shape that would
-    fit none of them. This carries only the shared preamble.
-
-    Attributes
-    ----------
-    core_path : Path
-        Path to the located ``session.json`` / ``acquisition.json``.
-    version : str
-        :data:`SCHEMA_V1` or :data:`SCHEMA_V2`, from
-        :func:`detect_schema_version`.
-    core_raw : dict
-        Raw core acquisition dict.
-    platform_raw : dict or None
-        Raw ``platform.json`` dict, or ``None`` when absent.
-    subject_raw : dict or None
-        Raw ``subject.json`` dict, or ``None`` when absent.
-    data_description_raw : dict or None
-        Raw ``data_description.json`` dict, or ``None`` when absent.
-    """
-
-    core_path: Path
-    version: str
-    core_raw: dict
-    platform_raw: Optional[dict] = None
-    subject_raw: Optional[dict] = None
-    data_description_raw: Optional[dict] = None
 
 
 def load_optional(input_dir: Path, name: str) -> Optional[dict]:
@@ -205,50 +268,42 @@ def load_optional(input_dir: Path, name: str) -> Optional[dict]:
     dict or None
         The parsed dict, or ``None`` when the file is absent.
     """
-    path = find(input_dir, name)
+    path = find_one(input_dir, name, recursive=True, required=False)
     return load_json(path) if path else None
 
 
-def load_common(input_dir: Path) -> CommonMetadata:
-    """Locate the core file, detect its version, and load common siblings.
+def reject_whole_record(core_raw: dict) -> None:
+    """Raise if a ``metadata.json`` is a whole-record export.
+
+    The whole-record DocDB export shares the minimal document's filename and
+    nests the core document under ``session`` or ``acquisition``. Read as
+    minimal it would find no fields rather than failing.
 
     Parameters
     ----------
-    input_dir : Path
-        Directory searched recursively for the metadata files.
-
-    Returns
-    -------
-    CommonMetadata
-        The core path, schema version and the four raw dicts.
+    core_raw : dict
+        Raw ``metadata.json`` dict.
 
     Raises
     ------
     ValueError
-        If both core files are present (see :func:`find_acquisition_file`).
-    FileNotFoundError
-        If neither core file is present.
+        If the dict carries a ``session`` or ``acquisition`` key.
     """
-    input_dir = Path(input_dir)
-    core_path = find_acquisition_file(input_dir)
-    return CommonMetadata(
-        core_path=core_path,
-        version=detect_schema_version(core_path),
-        core_raw=load_json(core_path),
-        platform_raw=load_optional(input_dir, PLATFORM_FILE),
-        subject_raw=load_optional(input_dir, SUBJECT_FILE),
-        data_description_raw=load_optional(input_dir, DATA_DESCRIPTION_FILE),
-    )
+    for key in (V1_CORE_FILE, V2_CORE_FILE):
+        nested = key.removesuffix(".json")
+        if nested in core_raw:
+            raise ValueError(
+                f"{MINIMAL_CORE_FILE} is a whole-record metadata export (it "
+                f"carries {nested!r}), not a minimal document. Extract "
+                f"the {key} core file and read that instead."
+            )
 
 
 def object_type_value(cls) -> str:
     """Return a v2 schema class's ``object_type`` discriminator default.
 
-    In aind-data-schema v2 the ``object_type`` field is a ``Literal`` whose
-    value is derived from the class name (e.g. ``ImagingConfig`` ->
-    ``"Imaging config"``) and used as the discriminator in serialized JSON.
-    Reading it from ``model_fields`` instead of hardcoding the string keeps
-    callers correct if the schema re-words a discriminator.
+    Read from ``model_fields`` rather than hardcoded, so callers stay correct
+    if the schema re-words a discriminator.
 
     Parameters
     ----------

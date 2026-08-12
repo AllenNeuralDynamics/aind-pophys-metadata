@@ -1,22 +1,13 @@
-"""Builders for the v2 ``processing.json`` output.
-
-Capsule-agnostic constructors for a v2 aind-data-schema ``Processing``
-document. Callers supply the varying bits (process type, code URL/name,
-parameters, timings); this module assembles the ``Code`` / ``DataProcess`` /
-``Processing`` objects and serializes via the schema's own
-``write_standard_file`` (so ``describedBy`` / ``schema_version`` are
-populated and the on-disk format matches other v2 artifacts).
-"""
+"""Builders for ``processing.json``."""
 
 import hashlib
 import importlib.metadata
 import logging
 import os
 import platform as platform_mod
-import re
 from datetime import datetime as dt
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from aind_data_schema.components.identifiers import Code, DataAsset
 from aind_data_schema.core.processing import (
@@ -34,21 +25,11 @@ logger = logging.getLogger(__name__)
 
 PROCESSING_JSON = "processing.json"
 
-# Landing page for an AIND backing library. The sole source of ``Code.url``
-# (see :func:`build_code`), so url and version always name one artifact.
-LIBRARY_URL_TEMPLATE = "https://github.com/AllenNeuralDynamics/{name}"
-
-# Nextflow stages every task into a private scratch directory under
-# ``/tmp/nxf.<random>``. Those paths are deleted when the task ends, so they
-# are meaningless in a permanent metadata document.
-EPHEMERAL_PATH_MARKER = "/tmp/nxf."
-
 #: Model bytes were already present locally when the loader ran.
 MODEL_SOURCE_ASSET = "code_ocean_data_asset"
 
 #: Model bytes were downloaded at runtime by the loader.
 MODEL_SOURCE_NETWORK = "network_download"
-_EPHEMERAL_PATH_RE = re.compile(r"^/tmp/nxf\.")
 
 # Sources for the container's memory limit: cgroup v2 first, then v1.
 CGROUP_MEMORY_LIMIT_FILES = (
@@ -59,9 +40,8 @@ CPU_INFO_FILE = "/proc/cpuinfo"
 CPU_MODEL_KEY = "model name"
 UNKNOWN = "unknown"
 
-# Pipeline identity is injected by the pipeline runtime (the pophys
-# pipeline's nextflow.config ``env`` block), never hardcoded in a capsule.
-# All three are expected whenever a capsule runs inside the pipeline.
+# Injected by the pipeline runtime, never hardcoded in a capsule. All three
+# are expected whenever a capsule runs inside the pipeline.
 PIPELINE_NAME_ENV = "PIPELINE_NAME"
 PIPELINE_VERSION_ENV = "PIPELINE_VERSION"
 PIPELINE_URL_ENV = "PIPELINE_URL"
@@ -70,10 +50,8 @@ PIPELINE_URL_ENV = "PIPELINE_URL"
 def pipeline_name_from_env() -> Optional[str]:
     """Return the running pipeline's name, or ``None`` outside a pipeline.
 
-    A plain read — completeness of the pipeline environment is validated by
-    :func:`pipeline_code`. Every write path calls both (``build_data_process``
-    then ``build_processing``), so a partial environment still fails loudly
-    before any document is written.
+    A plain read; :func:`pipeline_code` validates completeness, and every
+    write path calls both.
 
     Returns
     -------
@@ -87,15 +65,12 @@ def pipeline_name_from_env() -> Optional[str]:
 def pipeline_code() -> Optional[Code]:
     """Build the pipeline-level ``Code`` block from the environment.
 
-    The pipeline exports ``PIPELINE_NAME``, ``PIPELINE_URL`` and
-    ``PIPELINE_VERSION`` into every capsule, so all three are expected
-    whenever a capsule runs inside the pipeline. Any partial set is a
-    misconfigured pipeline and fails loudly — never a placeholder.
+    All three env vars are expected inside the pipeline; a partial set is a
+    misconfiguration and raises.
 
-    ``Processing`` validates that every ``DataProcess.pipeline_name``
-    resolves to an entry in ``Processing.pipelines``, so these two must be
-    populated together — both are derived from ``PIPELINE_NAME`` to keep
-    that invariant true by construction.
+    ``Processing`` validates that every ``DataProcess.pipeline_name`` resolves
+    to an entry in ``Processing.pipelines``, so both derive from
+    ``PIPELINE_NAME``.
 
     Returns
     -------
@@ -137,21 +112,6 @@ def pipeline_code() -> Optional[Code]:
     )
 
 
-def resource_usage() -> ResourceUsage:
-    """Return a ``ResourceUsage`` describing the current host.
-
-    Returns
-    -------
-    ResourceUsage
-        Populated with OS, CPU architecture, and logical core count.
-    """
-    return ResourceUsage(
-        os=platform_mod.system() or "unknown",
-        architecture=platform_mod.machine() or "unknown",
-        cpu_cores=os.cpu_count(),
-    )
-
-
 def _cpu_model() -> Optional[str]:
     """Return the CPU model string from ``/proc/cpuinfo``, or ``None``.
 
@@ -175,9 +135,8 @@ def _cpu_model() -> Optional[str]:
 def _cgroup_memory_bytes() -> Optional[float]:
     """Return the container's memory limit in bytes, or ``None``.
 
-    Reads the cgroup limit rather than the host's total memory, so the value
-    describes what the task was actually allowed to use. An unlimited cgroup
-    reports ``"max"`` and yields ``None``.
+    The cgroup limit, not the host's total memory, so it describes what the
+    task was allowed to use. An unlimited cgroup reports ``"max"``.
 
     Returns
     -------
@@ -197,14 +156,10 @@ def _cgroup_memory_bytes() -> Optional[float]:
 def collect_static_resources() -> ResourceUsage:
     """Return a ``ResourceUsage`` of what is truthfully known at startup.
 
-    Only cheap, immediately available facts are recorded: OS, architecture,
-    logical core count, CPU model and the container's memory limit. Nothing
-    is sampled over time, so every ``*_usage`` field stays ``None`` rather
-    than carrying a single misleading instantaneous reading.
-
-    Each individual read is guarded independently — a host that exposes no
-    procfs or no cgroup leaves that one field ``None`` instead of failing a
-    job over a metadata nicety.
+    Nothing is sampled over time, so every ``*_usage`` field stays ``None``
+    rather than carrying one misleading instantaneous reading. Each read is
+    guarded independently, so a missing procfs or cgroup leaves that field
+    ``None`` rather than failing the job.
 
     Returns
     -------
@@ -225,60 +180,12 @@ def collect_static_resources() -> ResourceUsage:
     )
 
 
-def reject_ephemeral_paths(value: Any, key: str = "") -> None:
-    """Raise if ``value`` contains a Nextflow task scratch path.
-
-    Nextflow stages each task under ``/tmp/nxf.<random>``, a directory that
-    is destroyed the moment the task ends. Recording one in ``processing.json``
-    produces a document that points at nothing — worse than omitting the
-    field, because it reads as real provenance. Containers are walked
-    recursively so a path nested inside a parameter dict is caught too.
-
-    Parameters
-    ----------
-    value : Any
-        Value to scan; dicts, lists and tuples are walked recursively and
-        anything that is not a string is ignored.
-    key : str, optional
-        Dotted key path of ``value``, used only to name the offender in the
-        error message.
-
-    Raises
-    ------
-    ValueError
-        If any string within ``value`` is a Nextflow task scratch path.
-    """
-    if isinstance(value, dict):
-        for sub_key, sub_value in value.items():
-            child = f"{key}.{sub_key}" if key else str(sub_key)
-            reject_ephemeral_paths(sub_value, child)
-        return
-    if isinstance(value, (list, tuple)):
-        for index, sub_value in enumerate(value):
-            reject_ephemeral_paths(sub_value, f"{key}[{index}]")
-        return
-    if not isinstance(value, str):
-        return
-    if _EPHEMERAL_PATH_RE.match(value) or EPHEMERAL_PATH_MARKER in value:
-        raise ValueError(
-            f"Ephemeral Nextflow work path in '{key or 'value'}': {value!r}. "
-            "Task scratch directories do not survive the task and must not "
-            "be written into permanent metadata; record a path relative to "
-            "the results root instead."
-        )
-
-
 def library_version(library_name: str) -> str:
     """Return the installed backing library's released version.
 
-    The version of the backing library is the authoritative identity of the
-    code that ran: those versions bump automatically when each package
-    merges to main through the shared org CI/CD workflow, so they name a
-    released artifact. A capsule wrapper's ``VERSION`` does not.
-
-    An unresolvable version is never fatal - losing a completed processing
-    run over a metadata string is the wrong trade - so it warns and yields
-    an empty string.
+    The backing library's version names a released artifact; a capsule
+    wrapper's ``VERSION`` does not. An unresolvable version warns and yields
+    an empty string rather than failing a completed run.
 
     Parameters
     ----------
@@ -308,22 +215,17 @@ def build_code(
     name: str,
     *,
     library_name: str,
+    url: str,
     parameters: Optional[dict] = None,
     input_data: Optional[List[str]] = None,
     language_version: Optional[str] = None,
 ) -> Code:
     """Construct a v2 ``Code`` block for a process.
 
-    Both ``url`` and ``version`` are derived from ``library_name`` and from
-    nothing else. ``version`` is the installed backing library's released
-    version (see :func:`library_version`); ``url`` is that library's landing
-    page. Neither a caller-supplied version nor the capsule wrapper's
-    ``VERSION`` environment variable is consulted: url and version must
-    always describe the same artifact, and the released library version is
-    the one that identifies production pipeline code.
-
-    An unresolvable version is never fatal; the document is still written
-    with an empty version and the library url, which remains correct.
+    ``version`` is the installed backing library's released version; neither a
+    caller-supplied version nor the capsule's ``VERSION`` env var is consulted.
+    ``url`` is supplied by the caller, since only the consuming repo knows
+    where its own code lives.
 
     Parameters
     ----------
@@ -331,8 +233,9 @@ def build_code(
         Human-readable code name.
     library_name : str
         Distribution name of the backing library (e.g.
-        ``"aind-ophys-dff-library"``). Required: it is the sole source of
-        both the url and the version.
+        ``"aind-ophys-dff-library"``). The sole source of the version.
+    url : str
+        Repository url for the code that ran.
     parameters : dict, optional
         Run parameters recorded on the code block.
     input_data : list of str, optional
@@ -344,18 +247,10 @@ def build_code(
     -------
     Code
         The populated code block.
-
-    Raises
-    ------
-    ValueError
-        If ``parameters`` or ``input_data`` carry a Nextflow task scratch
-        path (see :func:`reject_ephemeral_paths`).
     """
-    reject_ephemeral_paths(parameters or {}, "parameters")
-    reject_ephemeral_paths(list(input_data or []), "input_data")
     version = library_version(library_name)
     return Code(
-        url=LIBRARY_URL_TEMPLATE.format(name=library_name),
+        url=url,
         name=name,
         version=version,
         language="Python",
@@ -414,7 +309,7 @@ def build_data_process(
     notes : str, optional
         Free-text notes (e.g. runtime status or error text).
     resources : ResourceUsage, optional
-        Host resource usage (see :func:`resource_usage`).
+        Host resource usage (see :func:`collect_static_resources`).
     pipeline_name : str, optional
         Name of the pipeline this process belongs to. Defaults to
         ``PIPELINE_NAME`` from the environment, and is omitted entirely
@@ -424,26 +319,12 @@ def build_data_process(
     -------
     DataProcess
         The populated data process.
-
-    Raises
-    ------
-    ValueError
-        If ``output_path`` is a Nextflow task scratch path (see
-        :func:`reject_ephemeral_paths`).
     """
-    # ``output_path`` leaks the same task scratch directory as a parameter
-    # would; coerced first so a Path argument is scanned, not skipped.
-    if output_path is not None:
-        reject_ephemeral_paths(str(output_path), "output_path")
     if pipeline_name is None:
         pipeline_name = pipeline_name_from_env()
-    # ``DataProcess.name`` doubles as the ``Processing.dependency_graph``
-    # key, so aind-data-schema requires it unique across every process in
-    # one document ("data_processes must have unique names."). A per-plane
-    # capsule writes one document per plane, each deriving the same default
-    # name from ``process_type``, so the names collide the moment the
-    # aggregator merges them. Composing here rather than at each call site
-    # is what keeps the format identical across capsules.
+    # DataProcess.name doubles as the dependency_graph key and must be
+    # unique per document, so per-plane names would collide once the
+    # aggregator merges them. Composed here to keep the format identical.
     if plane_id:
         base = name or getattr(process_type, "value", process_type)
         name = f"{plane_id}: {base}"
@@ -456,9 +337,8 @@ def build_data_process(
         end_date_time=end_time,
         output_parameters=output_parameters or {},
     )
-    # Only pass optionals when set: DataProcess.name is typed ``str`` and
-    # rejects an explicit ``None`` (the schema derives it from
-    # ``process_type`` when omitted).
+    # DataProcess.name is typed str and rejects an explicit None; the schema
+    # derives it from process_type when omitted.
     optionals = {
         "name": name,
         "output_path": output_path,
@@ -477,15 +357,9 @@ def collect_upstream_process_names(
 ) -> List[str]:
     """Collect every upstream ``DataProcess`` name under ``input_dir``.
 
-    Every ``processing.json`` staged into this task is read and *all* of its
-    process names are collected as flat siblings. No ordering is inferred and
-    no attempt is made to tell a parent from a grandparent: if two upstream
-    documents both landed in this task's inputs, they are equally upstream,
-    and guessing a depth from file layout would encode a fiction the input
-    tree cannot support.
-
-    Unreadable or invalid documents are skipped with a warning — a malformed
-    upstream artifact must not cost a completed run.
+    All names are collected as flat siblings. No ordering is inferred and no
+    parent is told from a grandparent: the input tree cannot support that
+    distinction. Unreadable documents are skipped with a warning.
 
     Parameters
     ----------
@@ -528,11 +402,9 @@ def build_dependency_graph(
 ) -> Dict[str, List[str]]:
     """Build a single-node ``dependency_graph`` for one process.
 
-    ``Processing`` validates that the graph's *keys* exactly match its
-    ``data_processes`` names, so a capsule writing one process contributes
-    exactly one key. The upstream names appear only as values and are left
-    unvalidated by the schema, which is what lets a per-capsule document
-    name processes that live in a different document.
+    ``Processing`` validates the graph's *keys* against its
+    ``data_processes`` names but never its values, which is what lets a
+    per-capsule document name processes living in a different document.
 
     Parameters
     ----------
@@ -645,16 +517,12 @@ def model_provenance(
 ) -> List[Dict[str, str]]:
     """Describe the model files a run actually loaded, for ``code.parameters``.
 
-    This records provenance; it does **not** verify integrity. No expected
-    digest is compared and a mismatch cannot be detected here, because the
-    point is to state which bytes were used, not to police them. A file that
-    is absent is skipped rather than raising -- the model loader is what
-    should fail on a missing model, with its own message.
+    Records provenance; does **not** verify integrity. No digest is compared
+    and an absent file is skipped rather than raising -- the model loader
+    should fail on a missing model.
 
-    ``source_name`` is a stable logical label chosen by the caller, never the
-    resolved filesystem path: a task scratch directory does not survive the
-    task, so recording one would read as provenance while pointing at
-    nothing.
+    ``source_name`` is a caller-chosen logical label, never the resolved path:
+    a task scratch directory does not survive the task.
 
     Parameters
     ----------
@@ -673,13 +541,7 @@ def model_provenance(
     list of dict
         One record per file found, each with ``filename``, ``sha256``,
         ``source_name`` and ``source``.
-
-    Raises
-    ------
-    ValueError
-        If ``source_name`` is a Nextflow task scratch path.
     """
-    reject_ephemeral_paths(source_name, "source_name")
     records: List[Dict[str, str]] = []
     for filename in filenames:
         path = Path(directory) / filename

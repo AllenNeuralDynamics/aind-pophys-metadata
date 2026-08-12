@@ -1,13 +1,4 @@
-"""Builders for the v2 ``quality_control.json`` output.
-
-The project's output contract is that each capsule emits one complete
-``quality_control.json`` (a ``QualityControl`` object), never loose per-metric
-fragments; the QC aggregator later merges them via ``QualityControl.__add__``.
-This module provides the shared skeleton: a PENDING ``QCStatus``, the common
-dropdown ``QCMetric`` construction, the ``QualityControl`` wrapper with the
-project-standard ``default_grouping``, and the ``write_standard_file`` writer.
-Capsules supply only the metric *content* (names, descriptions, options).
-"""
+"""Builders for ``quality_control.json``."""
 
 from datetime import datetime as dt
 from pathlib import Path
@@ -107,13 +98,9 @@ def dropdown_metric(
         description=description,
         status_history=[pending_qc_status(evaluator)],
         reference=reference,
-        # Always "". qcportal's contract is that a dropdown value is
-        # either "" (pending) or one of the options, and this builder
-        # always stamps a PENDING status_history. A preselected value on a
-        # pending metric renders as already answered, so a reviewer treats
-        # it as done and never opens it -- and when the preselection maps
-        # to Status.PASS it silently auto-passes the review. There is no
-        # valid combination to expose, so there is no parameter for it.
+        # Always "". A preselected value on a PENDING metric renders as
+        # already answered, so the reviewer never opens it -- and index 0
+        # maps to Status.PASS, silently auto-passing. Hence no parameter.
         value=DropdownMetric(
             value="",
             options=list(options),

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aind-pophys-metadata"
-description = "Shared aind-data-schema v1/v2 metadata reads and Processing/QualityControl builders for AIND pophys capsules."
+description = "Shared AIND pophys metadata reads and Processing/QualityControl builders."
 license = "MIT"
 requires-python = ">=3.10,<3.13"
 authors = [

@@ -1,12 +1,4 @@
-"""Context manager wrapping one processing stage's metadata lifecycle.
-
-A capsule's ``run()`` wraps its work in :func:`stage_guard`. The guard stamps
-the timings, captures static resource usage, collects the upstream dependency
-graph, and writes ``processing.json`` on the way out - including when the body
-raised. A failed stage that leaves no metadata behind is indistinguishable
-from a stage that never ran, which is exactly the ambiguity that makes a
-truncated pipeline run hard to detect after the fact.
-"""
+"""The stage guard that always writes a ``processing.json``."""
 
 import logging
 from contextlib import contextmanager
@@ -25,7 +17,6 @@ from aind_pophys_metadata.processing import (
     build_dependency_graph,
     build_processing,
     collect_static_resources,
-    reject_ephemeral_paths,
     write_processing_json,
 )
 
@@ -33,14 +24,10 @@ STAGE_START = "stage_start"
 STAGE_COMPLETE = "stage_complete"
 STAGE_ERROR = "stage_error"
 
-# log-schema carries the lifecycle marker in a structured field rather than
-# in the message text, so a CloudWatch query keys on the field and keeps
-# matching when the wording changes. Emitted alongside the readable line,
-# never instead of it. The three values match what the capsules already
-# emitted before they adopted this guard; log-schema's README spells the
-# failure case ``stage_failure`` and ships no enum to import, but changing
-# the value here would silently break the queries this field exists to keep
-# working.
+# Lifecycle marker in a structured field, not the message text, so a
+# CloudWatch query keeps matching when the wording changes. These three
+# values are what the capsules already emitted -- changing them breaks the
+# queries this field exists to serve.
 EVENT_TYPE_FIELD = "event_type"
 
 
@@ -63,20 +50,12 @@ class StageContext:
         Host resource description; pre-populated with the static capture.
     input_data : list of str
         Input artifact names resolved during the stage body, merged into
-        ``Code.input_data`` when the document is built. Capsules that only
-        learn their inputs partway through the run record them here rather
-        than resolving artifacts outside the guard, which would leave the
-        most likely failure - a missing upstream file - with no
-        ``processing.json`` at all.
+        ``Code.input_data``. Recorded here rather than outside the guard, so
+        a missing upstream file still produces a ``processing.json``.
     parameters : dict
         Run parameters resolved during the stage body, merged into
-        ``Code.parameters`` when the document is built. For values a capsule
-        can only know once it has run - resolved suite2p ops, for instance -
-        which would otherwise be lost to the guard taking its ``Code`` at
-        entry. A key present both here and in ``build_code`` takes the
-        mid-run value: the resolved value is what the run actually used,
-        and the configured value it supersedes is by definition the less
-        accurate of the two.
+        ``Code.parameters``, for values a capsule only knows once it has run.
+        A key set here overrides the same key from ``build_code``.
     """
 
     output_parameters: Dict[str, Any] = field(default_factory=dict)
@@ -199,14 +178,9 @@ def stage_guard(
 def _merge_context_into_code(code: Code, context: StageContext) -> Code:
     """Return ``code`` with the context's mid-run additions folded in.
 
-    Values supplied up front through
-    :func:`aind_pophys_metadata.processing.build_code` and values resolved
-    during the body compose rather than conflict. ``input_data`` names are
-    appended in first-seen order with duplicates dropped; ``parameters``
-    keys resolved mid-run overwrite same-named entries from ``build_code``,
-    because the resolved value is the one the run actually used and the
-    configured value it replaces is the less accurate of the two. The
-    original ``Code`` is never mutated.
+    ``input_data`` names are appended in first-seen order with duplicates
+    dropped; ``parameters`` resolved mid-run overwrite same-named entries from
+    ``build_code``. The original ``Code`` is never mutated.
 
     Parameters
     ----------
@@ -220,19 +194,11 @@ def _merge_context_into_code(code: Code, context: StageContext) -> Code:
     Code
         ``code`` unchanged when the context added nothing, otherwise a copy
         carrying the merged values.
-
-    Raises
-    ------
-    ValueError
-        If any added value is a Nextflow task scratch path (see
-        :func:`aind_pophys_metadata.processing.reject_ephemeral_paths`).
         Mid-run values are the likeliest place for a task-specific path to
         appear, so the guard is re-applied here rather than only at entry.
     """
     if not context.input_data and not context.parameters:
         return code
-    reject_ephemeral_paths(list(context.input_data), "input_data")
-    reject_ephemeral_paths(dict(context.parameters), "parameters")
     assets = list(code.input_data or [])
     known = {asset.name for asset in assets}
     for name in context.input_data:

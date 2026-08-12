@@ -15,12 +15,13 @@ from aind_data_schema_models.process_names import ProcessName
 from aind_pophys_metadata import processing, runner
 
 _INSTALLED_LIBRARY = "aind-pophys-metadata"
+_URL = "https://github.com/AllenNeuralDynamics/aind-pophys-metadata"
 
 
 def _code() -> Code:
     """Build a minimal Code block for reuse."""
     return processing.build_code(
-        name="Example", library_name=_INSTALLED_LIBRARY
+        url=_URL, name="Example", library_name=_INSTALLED_LIBRARY
     )
 
 
@@ -149,7 +150,7 @@ class TestStageGuard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             pipeline = processing.build_code(
-                name="explicit", library_name=_INSTALLED_LIBRARY
+                url=_URL, name="explicit", library_name=_INSTALLED_LIBRARY
             )
             with runner.stage_guard(
                 out,
@@ -162,9 +163,7 @@ class TestStageGuard(unittest.TestCase):
             doc = _load(out)
         Processing.model_validate(doc)
         self.assertEqual(doc["pipelines"][0]["name"], "explicit")
-        self.assertEqual(
-            doc["data_processes"][0]["pipeline_name"], "explicit"
-        )
+        self.assertEqual(doc["data_processes"][0]["pipeline_name"], "explicit")
 
     def test_resources_are_prepopulated(self) -> None:
         """The context arrives with a static resource capture attached."""
@@ -209,6 +208,7 @@ class TestMidRunInputData(unittest.TestCase):
     def test_up_front_and_mid_run_input_data_compose(self) -> None:
         """build_code names are kept and mid-run names append, deduped."""
         code = processing.build_code(
+            url=_URL,
             name="Example",
             library_name=_INSTALLED_LIBRARY,
             input_data=["raw.h5"],
@@ -226,16 +226,6 @@ class TestMidRunInputData(unittest.TestCase):
         )
         # The caller's Code object is not mutated by the guard.
         self.assertEqual([a.name for a in code.input_data], ["raw.h5"])
-
-    def test_ephemeral_input_data_added_mid_run_is_rejected(self) -> None:
-        """A scratch path resolved during the body still fails the guard."""
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ValueError) as ctx_manager:
-                with runner.stage_guard(
-                    Path(tmp), ProcessName.DF_F_ESTIMATION, _code()
-                ) as ctx:
-                    ctx.input_data.append("/tmp/nxf.AbCd/movie.h5")
-        self.assertIn("input_data", str(ctx_manager.exception))
 
 
 class TestMidRunParameters(unittest.TestCase):
@@ -255,6 +245,7 @@ class TestMidRunParameters(unittest.TestCase):
     def test_mid_run_parameters_override_configured_ones(self) -> None:
         """A key set both up front and mid-run keeps the resolved value."""
         code = processing.build_code(
+            url=_URL,
             name="Example",
             library_name=_INSTALLED_LIBRARY,
             parameters={"diameter": None, "batch_size": 500},
@@ -269,16 +260,6 @@ class TestMidRunParameters(unittest.TestCase):
         self.assertEqual(written["parameters"]["diameter"], 14)
         self.assertEqual(written["parameters"]["batch_size"], 500)
         self.assertIsNone(dict(code.parameters)["diameter"])
-
-    def test_ephemeral_parameter_added_mid_run_is_rejected(self) -> None:
-        """A scratch path in a resolved parameter still fails the guard."""
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(ValueError) as ctx_manager:
-                with runner.stage_guard(
-                    Path(tmp), ProcessName.DF_F_ESTIMATION, _code()
-                ) as ctx:
-                    ctx.parameters["ops_path"] = "/tmp/nxf.9z/ops.npy"
-        self.assertIn("parameters.ops_path", str(ctx_manager.exception))
 
 
 class _CapturingHandler(logging.Handler):
@@ -301,7 +282,7 @@ class _CapturingHandler(logging.Handler):
 
 
 def _capture(
-    callable_: Callable[[logging.Logger], None]
+    callable_: Callable[[logging.Logger], None],
 ) -> List[logging.LogRecord]:
     """Run ``callable_`` with a capturing logger and return its records.
 
@@ -380,9 +361,7 @@ class TestStructuredEventType(unittest.TestCase):
             with patch.object(
                 runner, "_write", side_effect=OSError("disk full")
             ):
-                with self.assertLogs(
-                    runner.__name__, level="ERROR"
-                ) as logs:
+                with self.assertLogs(runner.__name__, level="ERROR") as logs:
                     with self.assertRaises(RuntimeError) as ctx:
                         with runner.stage_guard(
                             Path(tmp),
@@ -420,3 +399,21 @@ class TestStructuredEventType(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWriteFailure(unittest.TestCase):
+    """A failing write is logged as a stage error and re-raised."""
+
+    def test_write_failure_logs_stage_error_and_propagates(self) -> None:
+        """The guard never swallows a write it could not complete."""
+        out = Path(tempfile.mkdtemp())
+        with patch.object(runner, "_write", side_effect=OSError("disk full")):
+            with self.assertLogs(level="ERROR") as logs:
+                with self.assertRaises(OSError):
+                    with runner.stage_guard(
+                        out, ProcessName.DF_F_ESTIMATION, _code()
+                    ):
+                        pass
+        self.assertTrue(
+            any(runner.STAGE_ERROR in message for message in logs.output)
+        )
