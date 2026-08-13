@@ -54,13 +54,6 @@ ambiguous and raises. A `metadata.json` alongside either one is ignored.
 
 `CoreMetadata` is intended to be the **only** place in the pophys architecture that compares a schema version.
 
-The invariant is mechanical, and worth keeping that way. Run it from the directory holding the repos —
-inside a single repo the `*/src` glob matches nothing and reports a false pass:
-
-```bash
-grep -rn 'SchemaVersion\|SCHEMA_' */src | grep -v aind-pophys-metadata   # must be empty
-```
-
 `CoreMetadata.load(input_dir)` performs the find-core-files and detect-version task once and returns a **frozen** object carrying `version`, `core_path`,
 `core_raw` and the optional `platform_raw` / `subject_raw` / `data_description_raw` dicts.
 
@@ -118,8 +111,6 @@ um_per_pixel = metadata.get_um_per_pixel()
 planes = metadata.get_plane_records()
 epochs = metadata.get_epoch_records()
 ```
-
-The same code reads a v1 `session.json`, a v2 `acquisition.json` and a minimal `metadata.json`.
 
 Writing outputs — `stage_guard` emits a `processing.json` on both the success and the failure path:
 
