@@ -9,7 +9,6 @@ from aind_data_schema.components.configs import (
     ImagingConfig,
     LaserConfig,
     PlanarImage,
-    PlanarImageStack,
 )
 from aind_data_schema.components.coordinates import Scale
 
@@ -27,10 +26,8 @@ logger = logging.getLogger(__name__)
 # v2 discriminator values, read from the schema classes (not hardcoded) so
 # they track the installed aind-data-schema version.
 _V2_IMAGING_CONFIG_TYPE = object_type_value(ImagingConfig)
-_V2_PLANAR_IMAGE_TYPES = {
-    object_type_value(PlanarImage),
-    object_type_value(PlanarImageStack),
-}
+# PlanarImageStack describes stack/channel acquisition, not a time-series FOV.
+_V2_FOV_IMAGE_TYPE = object_type_value(PlanarImage)
 _V2_SCALE_TYPE = object_type_value(Scale)
 _V2_LASER_CONFIG_TYPE = object_type_value(LaserConfig)
 
@@ -355,6 +352,47 @@ def _pairs_from_records(
     return [(record["plane_index"], record["structure"]) for record in records]
 
 
+def _deduplicate_plane_records(
+    records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Collapse repeated descriptions of the same physical plane.
+
+    Some single-plane v1 sessions store an ``ophys_fov`` on every epoch data
+    stream. The v2 upgrader preserves those epoch-level descriptions as
+    repeated ``PlanarImage``
+    entries. Both layouts can therefore describe one physical plane more
+    than once. Identical records are safe to collapse; conflicting records
+    are not, because choosing one would hide a metadata inconsistency.
+
+    Parameters
+    ----------
+    records : list of dict
+        Normalized per-plane records.
+
+    Returns
+    -------
+    list of dict
+        One record per physical plane, retaining first-seen order.
+
+    Raises
+    ------
+    ValueError
+        If records with one plane index disagree.
+    """
+    unique: Dict[int, Dict[str, Any]] = {}
+    for record in records:
+        plane_index = record["plane_index"]
+        if plane_index not in unique:
+            unique[plane_index] = record
+            continue
+        if unique[plane_index] != record:
+            raise ValueError(
+                "Conflicting metadata for physical plane index "
+                f"{plane_index}: repeated plane records disagree."
+            )
+    return list(unique.values())
+
+
 # ---------------------------------------------------------------------------
 # Per-plane records
 # ---------------------------------------------------------------------------
@@ -431,7 +469,7 @@ def _plane_records_v2(acquisition: dict) -> List[Dict[str, Any]]:
     for config in _imaging_configs_v2(acquisition):
         axis_unit = (config.get("coordinate_system") or {}).get("axis_unit")
         for image in config.get("images") or []:
-            if image.get("object_type") not in _V2_PLANAR_IMAGE_TYPES:
+            if image.get("object_type") != _V2_FOV_IMAGE_TYPE:
                 continue
             dimensions = (image.get("dimensions") or {}).get("scale") or []
             scale_factor = _first_scale_v2(
@@ -912,22 +950,26 @@ class CoreMetadata:
         Returns
         -------
         list of dict
-            Unsorted records, keyed ``plane_index``, ``structure``, ``depth``,
-            ``depth_unit``, ``coupled_plane_index``, ``scale_factor``,
-            ``scale_factor_unit``, ``um_per_pixel``, ``width``, ``height``.
+            Unsorted unique records, keyed ``plane_index``, ``structure``,
+            ``depth``, ``depth_unit``, ``coupled_plane_index``,
+            ``scale_factor``, ``scale_factor_unit``, ``um_per_pixel``,
+            ``width``, ``height``.
             Pair them with canonical ids by sorting on ``plane_index`` and
             zipping against :meth:`get_fov_ids`.
 
         Raises
         ------
         ValueError
-            If this document's schema version is unrecognised.
+            If this document's schema version is unrecognised, or repeated
+            records for one physical plane conflict.
         """
         if self.version is SchemaVersion.V1:
-            return _plane_records_v1(self.core_raw)
-        if self.version is SchemaVersion.V2:
-            return _plane_records_v2(self.core_raw)
-        return _plane_records_minimal(self.core_raw)
+            records = _plane_records_v1(self.core_raw)
+        elif self.version is SchemaVersion.V2:
+            records = _plane_records_v2(self.core_raw)
+        else:
+            records = _plane_records_minimal(self.core_raw)
+        return _deduplicate_plane_records(records)
 
     def get_fov_ids(self) -> Tuple[str, ...]:
         """Canonical plane ids, ordered by plane index.

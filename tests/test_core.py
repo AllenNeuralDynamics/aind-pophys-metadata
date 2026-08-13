@@ -12,6 +12,7 @@ from aind_data_schema.components.configs import (
     ImagingConfig,
     LaserConfig,
     PlanarImage,
+    PlanarImageStack,
 )
 from aind_data_schema.components.coordinates import Scale
 
@@ -20,6 +21,7 @@ from aind_pophys_metadata.core import CoreMetadata
 
 _IMAGING = io.object_type_value(ImagingConfig)
 _PLANAR = io.object_type_value(PlanarImage)
+_STACK = io.object_type_value(PlanarImageStack)
 _SCALE = io.object_type_value(Scale)
 _LASER = io.object_type_value(LaserConfig)
 
@@ -577,6 +579,106 @@ class TestFovPairs(unittest.TestCase):
             _v1_session(fovs=[{"index": 3, "imaging_depth": 100}])
         )
         self.assertEqual(core._pairs_from_records(records), [(3, None)])
+
+
+class TestPlaneRecordDeduplication(unittest.TestCase):
+    """Repeated epoch descriptions resolve to physical planes."""
+
+    def test_v1_repeated_epoch_fovs_collapse(self) -> None:
+        """Identical v1 FOVs on separate streams produce one plane."""
+        fov = {
+            "index": 0,
+            "targeted_structure": "Primary Motor Cortex",
+            "imaging_depth": 110,
+        }
+        session = _v1_session(fovs=[fov, dict(fov), dict(fov)])
+        metadata = _direct(io.SCHEMA_V1, session)
+        self.assertEqual(len(metadata.get_plane_records()), 1)
+        self.assertEqual(metadata.get_fov_ids(), ("plane_0",))
+
+    def test_distinct_plane_indices_remain_distinct(self) -> None:
+        """Deduplication does not collapse true multiplane records."""
+        session = _v1_session(
+            fovs=[
+                {"index": 0, "targeted_structure": "VISp"},
+                {"index": 1, "targeted_structure": "VISp"},
+            ]
+        )
+        metadata = _direct(io.SCHEMA_V1, session)
+        self.assertEqual(
+            [r["plane_index"] for r in metadata.get_plane_records()], [0, 1]
+        )
+
+    def test_minimal_repeated_planes_collapse(self) -> None:
+        """Repeated minimal plane descriptions also produce one plane."""
+        plane = {"plane_index": 0, "structure": "VISp", "depth": 150}
+        metadata = _direct(
+            io.SCHEMA_MINIMAL,
+            {"planes": [plane, dict(plane)]},
+        )
+        self.assertEqual(len(metadata.get_plane_records()), 1)
+        self.assertEqual(metadata.get_fov_ids(), ("plane_0",))
+
+    def test_conflicting_records_raise(self) -> None:
+        """A repeated index with different metadata fails loudly."""
+        session = _v1_session(
+            fovs=[
+                {"index": 0, "imaging_depth": 100},
+                {"index": 0, "imaging_depth": 110},
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "plane index 0"):
+            _direct(io.SCHEMA_V1, session).get_plane_records()
+
+    def test_upgraded_v2_stack_and_epoch_images(self) -> None:
+        """Upgraded Bergamo shape ignores stack channels and keeps epochs."""
+        stack = _planar_image(
+            [
+                {
+                    "plane_index": None,
+                    "targeted_structure": {"acronym": "MO"},
+                    "depth": 90,
+                }
+            ]
+        )
+        stack["object_type"] = _STACK
+        epoch_plane = _planar_image(
+            [
+                {
+                    "plane_index": None,
+                    "targeted_structure": {"acronym": "MO"},
+                    "depth": 110,
+                }
+            ]
+        )
+        acquisition = _v2_from_images(
+            [stack, epoch_plane, dict(epoch_plane), dict(epoch_plane)]
+        )
+        acquisition["stimulus_epochs"] = [
+            {
+                "stimulus_name": "spontaneous activity",
+                "output_parameters": {"tiff_stem": "spont"},
+            },
+            {
+                "stimulus_name": "spontaneous activity",
+                "output_parameters": {"tiff_stem": "spontpost"},
+            },
+            {
+                "stimulus_name": "single neuron BCI conditioning",
+                "output_parameters": {
+                    "tiff_stem": "neuron8_to_17_again_again"
+                },
+            },
+        ]
+        metadata = _direct(io.SCHEMA_V2, acquisition)
+        records = metadata.get_plane_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["depth"], 110.0)
+        self.assertEqual(metadata.get_fov_ids(), ("plane_0",))
+        self.assertEqual(
+            [e["tiff_stem"] for e in metadata.get_epoch_records()],
+            ["spont", "spontpost", "neuron8_to_17_again_again"],
+        )
 
 
 class TestGetFovIds(_CoreFileCase):

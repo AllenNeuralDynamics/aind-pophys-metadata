@@ -21,7 +21,8 @@ Shared `aind-data-schema` metadata reads and `Processing` / `QualityControl` out
     - instrument_id
     - subject_id
     - dataset_name
-    - plane_records — one dict per imaging plane
+    - plane_records — one dict per unique imaging plane; repeated epoch FOV
+      descriptions are collapsed and stack-image descriptions are excluded
     - fov_ids — canonical plane ids, ordered by plane index
     - um_per_pixel
     - excitation_wavelength
