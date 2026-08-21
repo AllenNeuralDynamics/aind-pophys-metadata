@@ -31,11 +31,17 @@ from aind_pophys_metadata.naming import (
 )
 from aind_pophys_metadata.processing import (
     PIPELINE_NAME_ENV,
+    PIPELINE_URL_ENV,
+    PIPELINE_VERSION_ENV,
+    PROCESSING_JSON,
     build_code,
     build_data_process,
+    build_processing,
     collect_static_resources,
     library_version,
+    pipeline_code,
     pipeline_name_from_env,
+    write_processing_json,
 )
 
 __version__ = "0.1.0"
@@ -65,9 +71,15 @@ __all__ = [
     "build_fov_ids",
     "fov_id",
     "PIPELINE_NAME_ENV",
+    "PIPELINE_URL_ENV",
+    "PIPELINE_VERSION_ENV",
+    "PROCESSING_JSON",
     "build_code",
     "build_data_process",
+    "build_processing",
     "collect_static_resources",
     "library_version",
+    "pipeline_code",
     "pipeline_name_from_env",
+    "write_processing_json",
 ]

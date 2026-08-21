@@ -5,11 +5,13 @@ import logging
 import os
 import platform as platform_mod
 from datetime import datetime as dt
-from typing import List, Optional
+from pathlib import Path
+from typing import Dict, List, Optional
 
 from aind_data_schema.components.identifiers import Code, DataAsset
 from aind_data_schema.core.processing import (
     DataProcess,
+    Processing,
     ProcessStage,
     ResourceUsage,
 )
@@ -17,6 +19,8 @@ from aind_data_schema_models.process_names import ProcessName
 from aind_data_schema_models.units import MemoryUnit
 
 logger = logging.getLogger(__name__)
+
+PROCESSING_JSON = "processing.json"
 
 # Sources for the container's memory limit: cgroup v2 first, then v1.
 CGROUP_MEMORY_LIMIT_FILES = (
@@ -32,6 +36,8 @@ CO_MEMORY_ENV = "CO_MEMORY"
 # Injected by the pipeline runtime, never hardcoded in a capsule. All three
 # are expected whenever a capsule runs inside the pipeline.
 PIPELINE_NAME_ENV = "PIPELINE_NAME"
+PIPELINE_VERSION_ENV = "PIPELINE_VERSION"
+PIPELINE_URL_ENV = "PIPELINE_URL"
 
 
 def pipeline_name_from_env() -> Optional[str]:
@@ -47,6 +53,56 @@ def pipeline_name_from_env() -> Optional[str]:
         (a standalone capsule run).
     """
     return os.getenv(PIPELINE_NAME_ENV) or None
+
+
+def pipeline_code() -> Optional[Code]:
+    """Build the pipeline-level ``Code`` block from the environment.
+
+    All three env vars are expected inside the pipeline; a partial set is a
+    misconfiguration and raises.
+
+    ``Processing`` validates that every ``DataProcess.pipeline_name`` resolves
+    to an entry in ``Processing.pipelines``, so both derive from
+    ``PIPELINE_NAME``.
+
+    Returns
+    -------
+    Code or None
+        The pipeline code block, or ``None`` when none of the three are set
+        (a standalone capsule run outside the pipeline).
+
+    Raises
+    ------
+    ValueError
+        If only some of the three are set.
+    """
+    values = {
+        env: os.getenv(env)
+        for env in (
+            PIPELINE_NAME_ENV,
+            PIPELINE_URL_ENV,
+            PIPELINE_VERSION_ENV,
+        )
+    }
+    missing = [env for env, value in values.items() if not value]
+    if len(missing) == len(values):
+        logger.warning(
+            "None of %s are set; emitting processing.json without pipeline "
+            "linkage. Expected inside the pipeline, which exports all three.",
+            ", ".join(values),
+        )
+        return None
+    if missing:
+        raise ValueError(
+            f"Incomplete pipeline environment: {', '.join(missing)} "
+            f"missing. The pipeline must export {PIPELINE_NAME_ENV}, "
+            f"{PIPELINE_URL_ENV} and {PIPELINE_VERSION_ENV}."
+        )
+    return Code(
+        name=values[PIPELINE_NAME_ENV],
+        url=values[PIPELINE_URL_ENV],
+        version=values[PIPELINE_VERSION_ENV],
+    )
 
 
 def _cpu_model() -> Optional[str]:
@@ -296,3 +352,66 @@ def build_data_process(
     }
     kwargs.update({k: v for k, v in optionals.items() if v is not None})
     return DataProcess(**kwargs)
+
+
+def build_processing(
+    data_processes: List[DataProcess],
+    *,
+    pipelines: Optional[List[Code]] = None,
+    notes: Optional[str] = None,
+    dependency_graph: Optional[Dict[str, List[str]]] = None,
+) -> Processing:
+    """Wrap data processes into a full v2 ``Processing`` document.
+
+    Parameters
+    ----------
+    data_processes : list of DataProcess
+        The processes describing this run.
+    pipelines : list of Code, optional
+        Pipeline-level code blocks. Defaults to the pipeline described by
+        the ``PIPELINE_*`` environment variables, and stays ``None``
+        outside a pipeline run (see :func:`pipeline_code`).
+    notes : str, optional
+        Document-level notes.
+    dependency_graph : dict of str to list of str, optional
+        Upstream dependencies keyed by process name (see
+        :func:`build_dependency_graph`). Omitted when ``None``.
+
+    Returns
+    -------
+    Processing
+        The assembled processing document.
+    """
+    if pipelines is None:
+        code = pipeline_code()
+        pipelines = [code] if code is not None else None
+    return Processing(
+        data_processes=list(data_processes),
+        pipelines=pipelines,
+        notes=notes,
+        dependency_graph=dependency_graph,
+    )
+
+
+def write_processing_json(processing: Processing, output_dir: Path) -> Path:
+    """Write ``processing.json`` to ``output_dir`` via the schema helper.
+
+    Uses ``Processing.write_standard_file`` so the file format matches other
+    v2 metadata artifacts (``describedBy`` / ``schema_version`` populated).
+
+    Parameters
+    ----------
+    processing : Processing
+        Object built by :func:`build_processing`.
+    output_dir : Path
+        Destination directory; created if it does not exist.
+
+    Returns
+    -------
+    Path
+        Path to the written ``processing.json``.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    processing.write_standard_file(output_directory=str(output_dir))
+    return output_dir / PROCESSING_JSON
