@@ -56,6 +56,14 @@ from aind_pophys_metadata.quality_control import (
     pending_qc_status,
     write_quality_control_json,
 )
+from aind_pophys_metadata.runner import (
+    EVENT_TYPE_FIELD,
+    STAGE_COMPLETE,
+    STAGE_ERROR,
+    STAGE_START,
+    StageContext,
+    stage_guard,
+)
 
 __version__ = "0.1.0"
 
@@ -106,4 +114,10 @@ __all__ = [
     "dropdown_metric",
     "pending_qc_status",
     "write_quality_control_json",
+    "EVENT_TYPE_FIELD",
+    "STAGE_COMPLETE",
+    "STAGE_ERROR",
+    "STAGE_START",
+    "StageContext",
+    "stage_guard",
 ]
