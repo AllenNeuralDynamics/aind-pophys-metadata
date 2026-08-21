@@ -412,6 +412,65 @@ class TestStaticResources(unittest.TestCase):
         self.assertIsNone(ru.system_memory_unit)
 
 
+class TestModelProvenance(unittest.TestCase):
+    """SHA-256 records for the model bytes a run loaded."""
+
+    def test_file_sha256_matches_hashlib(self) -> None:
+        """The chunked digest equals a whole-file digest."""
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "blob"
+            payload = b"x" * (1024 * 1024 + 7)
+            path.write_bytes(payload)
+            self.assertEqual(
+                processing.file_sha256(path),
+                hashlib.sha256(payload).hexdigest(),
+            )
+
+    def test_records_each_present_file(self) -> None:
+        """Every located file yields filename, digest, label and source."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "net").write_bytes(b"a")
+            (root / "size.npy").write_bytes(b"b")
+            records = processing.model_provenance(
+                root, ["net", "size.npy"], source_name="cellpose_models"
+            )
+        self.assertEqual([r["filename"] for r in records], ["net", "size.npy"])
+        self.assertTrue(all(len(r["sha256"]) == 64 for r in records))
+        self.assertEqual(
+            {r["source_name"] for r in records}, {"cellpose_models"}
+        )
+        self.assertEqual(
+            {r["source"] for r in records}, {processing.MODEL_SOURCE_ASSET}
+        )
+
+    def test_absent_file_is_omitted_not_raised(self) -> None:
+        """Provenance is not an integrity gate; the loader reports absence."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "net").write_bytes(b"a")
+            with self.assertLogs(processing.logger, level="WARNING"):
+                records = processing.model_provenance(
+                    root, ["net", "gone"], source_name="models"
+                )
+        self.assertEqual([r["filename"] for r in records], ["net"])
+
+    def test_network_source_is_recordable(self) -> None:
+        """A fallback download is labelled as such, not as a local asset."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "net").write_bytes(b"a")
+            records = processing.model_provenance(
+                root,
+                ["net"],
+                source_name="cellpose.org",
+                source=processing.MODEL_SOURCE_NETWORK,
+            )
+        self.assertEqual(records[0]["source"], processing.MODEL_SOURCE_NETWORK)
+
+
 class TestDependencyGraph(unittest.TestCase):
     """Upstream-name collection and dependency-graph emission."""
 
