@@ -29,6 +29,10 @@ from aind_pophys_metadata.naming import (
     build_fov_ids,
     fov_id,
 )
+from aind_pophys_metadata.processing import (
+    build_code,
+    library_version,
+)
 
 __version__ = "0.1.0"
 
@@ -56,4 +60,6 @@ __all__ = [
     "require",
     "build_fov_ids",
     "fov_id",
+    "build_code",
+    "library_version",
 ]
