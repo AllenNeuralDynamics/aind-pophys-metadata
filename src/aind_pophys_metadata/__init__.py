@@ -21,6 +21,10 @@ from aind_pophys_metadata.io import (
     relative_to_root,
     require,
 )
+from aind_pophys_metadata.naming import (
+    build_fov_ids,
+    fov_id,
+)
 
 __version__ = "0.1.0"
 
@@ -44,4 +48,6 @@ __all__ = [
     "reject_whole_record",
     "relative_to_root",
     "require",
+    "build_fov_ids",
+    "fov_id",
 ]
