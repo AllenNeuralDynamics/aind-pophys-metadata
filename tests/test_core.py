@@ -7,7 +7,11 @@ import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from aind_data_schema.components.configs import ImagingConfig, PlanarImage
+from aind_data_schema.components.configs import (
+    ImagingConfig,
+    LaserConfig,
+    PlanarImage,
+)
 from aind_data_schema.components.coordinates import Scale
 
 from aind_pophys_metadata import core, io
@@ -16,6 +20,7 @@ from aind_pophys_metadata.core import CoreMetadata
 _IMAGING = io.object_type_value(ImagingConfig)
 _PLANAR = io.object_type_value(PlanarImage)
 _SCALE = io.object_type_value(Scale)
+_LASER = io.object_type_value(LaserConfig)
 
 UNKNOWN_VERSION = "v3"
 
@@ -1272,6 +1277,115 @@ class TestImagingConfigsV2(unittest.TestCase):
     def test_no_streams(self) -> None:
         """A document with no data streams has no imaging configs."""
         self.assertEqual(core._imaging_configs_v2({}), [])
+
+
+class TestExcitationWavelength(_CoreFileCase):
+    """Excitation wavelength across the three versions."""
+
+    def test_v1_light_sources(self) -> None:
+        """v1 reads the first data stream light source with a wavelength."""
+        session = {
+            "data_streams": [
+                {"light_sources": [{}, {"wavelength": "920"}]},
+            ]
+        }
+        self.assertEqual(core._excitation_wavelength_v1(session), 920.0)
+
+    def test_v1_none(self) -> None:
+        """No light source declaring a wavelength yields None."""
+        self.assertIsNone(core._excitation_wavelength_v1({}))
+
+    def test_v2_laser_config_under_a_channel(self) -> None:
+        """v2 reads the channel's LaserConfig."""
+        acq = _v2_from_images(
+            [],
+            channels=[
+                {"light_sources": [{"object_type": _LASER, "wavelength": 910}]}
+            ],
+        )
+        self.assertEqual(core._excitation_wavelength_v2(acq), 910.0)
+
+    def test_v2_missing_object_type_is_treated_as_a_laser(self) -> None:
+        """An untyped light source is read rather than skipped."""
+        acq = _v2_from_images(
+            [], channels=[{"light_sources": [{"wavelength": 940}]}]
+        )
+        self.assertEqual(core._excitation_wavelength_v2(acq), 940.0)
+
+    def test_v2_other_config_type_is_skipped(self) -> None:
+        """A non-laser light source is not read for excitation."""
+        acq = _v2_from_images(
+            [],
+            channels=[
+                {
+                    "light_sources": [
+                        {
+                            "object_type": "Light emitting diode config",
+                            "wavelength": 470,
+                        },
+                        {"object_type": _LASER, "wavelength": 920},
+                    ]
+                }
+            ],
+        )
+        self.assertEqual(core._excitation_wavelength_v2(acq), 920.0)
+
+    def test_v2_none(self) -> None:
+        """A channel with no light sources yields None."""
+        self.assertIsNone(core._excitation_wavelength_v2(_v2_from_images([])))
+
+    def test_method_reads_all_three_versions(self) -> None:
+        """Each version reads its own spelling through one method."""
+        session = {"data_streams": [{"light_sources": [{"wavelength": 920}]}]}
+        self.assertEqual(
+            _direct(io.SCHEMA_V1, session).get_excitation_wavelength(), 920.0
+        )
+        acq = _v2_from_images(
+            [],
+            channels=[
+                {"light_sources": [{"object_type": _LASER, "wavelength": 910}]}
+            ],
+        )
+        self.assertEqual(
+            _direct(io.SCHEMA_V2, acq).get_excitation_wavelength(), 910.0
+        )
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"excitation_nm": "900"})
+        self.assertEqual(loaded.get_excitation_wavelength(), 900.0)
+
+
+class TestEmissionWavelength(_CoreFileCase):
+    """Emission wavelength, which v1 simply does not record."""
+
+    def test_v1_is_none_by_design(self) -> None:
+        """v1 has no per-channel emission wavelength to read."""
+        acq_shaped = _v2_from_images(
+            [], channels=[{"emission_wavelength": 520}]
+        )
+        self.assertIsNone(
+            _direct(io.SCHEMA_V1, acq_shaped).get_emission_wavelength()
+        )
+
+    def test_v2_reads_the_channel(self) -> None:
+        """v2 reads channels[*].emission_wavelength."""
+        acq = _v2_from_images(
+            [], channels=[{}, {"emission_wavelength": "520"}]
+        )
+        self.assertEqual(
+            _direct(io.SCHEMA_V2, acq).get_emission_wavelength(), 520.0
+        )
+
+    def test_v2_none(self) -> None:
+        """No channel declaring one yields None."""
+        self.assertIsNone(
+            _direct(
+                io.SCHEMA_V2, _v2_from_images([])
+            ).get_emission_wavelength()
+        )
+
+    def test_minimal(self) -> None:
+        """The minimal document spells it emission_nm."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"emission_nm": 515})
+        self.assertEqual(loaded.get_emission_wavelength(), 515.0)
 
 
 if __name__ == "__main__":
