@@ -3,9 +3,10 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from aind_data_schema.components.configs import ImagingConfig
+from aind_data_schema.components.configs import ImagingConfig, PlanarImage
+from aind_data_schema.components.coordinates import Scale
 
 from aind_pophys_metadata import io
 from aind_pophys_metadata.io import (
@@ -14,12 +15,16 @@ from aind_pophys_metadata.io import (
     object_type_value,
     require,
 )
+from aind_pophys_metadata.naming import build_fov_ids
 
 logger = logging.getLogger(__name__)
 
 # v2 discriminator values, read from the schema classes (not hardcoded) so
 # they track the installed aind-data-schema version.
 _V2_IMAGING_CONFIG_TYPE = object_type_value(ImagingConfig)
+# PlanarImageStack describes stack/channel acquisition, not a time-series FOV.
+_V2_FOV_IMAGE_TYPE = object_type_value(PlanarImage)
+_V2_SCALE_TYPE = object_type_value(Scale)
 
 DEFAULT_LENGTH_UNIT = "micrometer"
 
@@ -166,6 +171,38 @@ def _dataset_name(
     return None if name is None else str(name)
 
 
+# ---------------------------------------------------------------------------
+# Coercion and units
+# ---------------------------------------------------------------------------
+
+# An explicit table rather than a unit library: the set of units these
+# documents carry is closed, and an unrecognised one must be visible.
+_MICROMETERS_PER_UNIT = {
+    "micrometer": 1.0,
+    "micrometre": 1.0,
+    "micron": 1.0,
+    "microns": 1.0,
+    "um": 1.0,
+    "µm": 1.0,
+    "nanometer": 1e-3,
+    "nanometre": 1e-3,
+    "nm": 1e-3,
+    "millimeter": 1e3,
+    "millimetre": 1e3,
+    "mm": 1e3,
+    "centimeter": 1e4,
+    "centimetre": 1e4,
+    "cm": 1e4,
+    "meter": 1e6,
+    "metre": 1e6,
+    "m": 1e6,
+}
+
+# Real v1 assets spell fov_scale_factor_unit as "um/pixel"; the denominator
+# is implied by the field, so strip it before lookup.
+_PER_PIXEL_SUFFIXES = ("/pixel", "/pix", "/px", " per pixel")
+
+
 def _as_float(value: Any) -> Optional[float]:
     """Coerce a raw metadata value to float, or return ``None``.
 
@@ -186,6 +223,376 @@ def _as_float(value: Any) -> Optional[float]:
     except (TypeError, ValueError, OverflowError):
         logger.warning("Ignoring non-numeric metadata value %r", value)
         return None
+
+
+def _to_micrometers(
+    value: Optional[float], unit: Optional[str]
+) -> Optional[float]:
+    """Convert a length to micrometres, or return ``None`` if it cannot be.
+
+    An unrecognised unit warns and yields ``None`` rather than assuming
+    micrometres, so a caller can refuse to default instead of being handed a
+    value wrong by a factor of a thousand.
+
+    Parameters
+    ----------
+    value : float or None
+        The magnitude.
+    unit : str or None
+        The unit ``value`` is expressed in; ``None`` is read as micrometres,
+        matching the schema default.
+
+    Returns
+    -------
+    float or None
+        The value in micrometres, or ``None``.
+    """
+    if value is None:
+        return None
+    if unit is None:
+        return float(value)
+    text = str(unit).strip().lower()
+    for suffix in _PER_PIXEL_SUFFIXES:
+        if text.endswith(suffix):
+            text = text[: -len(suffix)].strip()
+            break
+    factor = _MICROMETERS_PER_UNIT.get(text)
+    if factor is None:
+        logger.warning(
+            "Unrecognised length unit %r; not converting to micrometres.",
+            unit,
+        )
+        return None
+    return float(value) * factor
+
+
+# ---------------------------------------------------------------------------
+# FOV / plane naming
+# ---------------------------------------------------------------------------
+
+
+def _as_int(value: Any) -> Optional[int]:
+    """Coerce a raw metadata value to int, or return ``None``.
+
+    An explicit JSON ``null`` is distinct from an absent key: ``dict.get``
+    returns the ``None`` rather than the default, so a bare ``int(...)``
+    raises ``TypeError`` on a field a real asset is allowed to leave blank.
+
+    Parameters
+    ----------
+    value : Any
+        Raw value from the metadata dict; strings are common in v1.
+
+    Returns
+    -------
+    int or None
+        The coerced value, or ``None`` when absent or uncoercible.
+    """
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        logger.warning("Ignoring non-numeric metadata value %r", value)
+        return None
+
+
+def _acronym_from_targeted_structure(value: Any) -> Optional[str]:
+    """Extract a structure acronym from a v1/v2 ``targeted_structure`` value.
+
+    The field type changed across schema versions, so tolerate all shapes:
+    a bare acronym string, a dict carrying an ``"acronym"`` key, or absent.
+
+    Parameters
+    ----------
+    value : Any
+        The raw ``targeted_structure`` value.
+
+    Returns
+    -------
+    str or None
+        The acronym, or ``None`` when none is available.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        acronym = value.get("acronym")
+        return str(acronym) if acronym is not None else None
+    return None
+
+
+def _pairs_from_records(
+    records: List[Dict[str, Any]],
+) -> List[Tuple[int, Optional[str]]]:
+    """Reduce plane records to the ``(plane_index, acronym)`` pairs.
+
+    Parameters
+    ----------
+    records : list of dict
+        Plane records from a ``get_plane_records_*`` reader.
+
+    Returns
+    -------
+    list of (int, str or None)
+        Unsorted per-plane pairs.
+    """
+    return [(record["plane_index"], record["structure"]) for record in records]
+
+
+def _deduplicate_plane_records(
+    records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Collapse repeated descriptions of the same physical plane.
+
+    Some single-plane v1 sessions store an ``ophys_fov`` on every epoch data
+    stream. The v2 upgrader preserves those epoch-level descriptions as
+    repeated ``PlanarImage``
+    entries. Both layouts can therefore describe one physical plane more
+    than once. Identical records are safe to collapse; conflicting records
+    are not, because choosing one would hide a metadata inconsistency.
+
+    Parameters
+    ----------
+    records : list of dict
+        Normalized per-plane records.
+
+    Returns
+    -------
+    list of dict
+        One record per physical plane, retaining first-seen order.
+
+    Raises
+    ------
+    ValueError
+        If records with one plane index disagree.
+    """
+    unique: Dict[int, Dict[str, Any]] = {}
+    for record in records:
+        plane_index = record["plane_index"]
+        if plane_index not in unique:
+            unique[plane_index] = record
+            continue
+        if unique[plane_index] != record:
+            raise ValueError(
+                "Conflicting metadata for physical plane index "
+                f"{plane_index}: repeated plane records disagree."
+            )
+    return list(unique.values())
+
+
+# ---------------------------------------------------------------------------
+# Per-plane records
+# ---------------------------------------------------------------------------
+
+# Plane records are plain dicts, so a new per-plane field is additive.
+# Keys: plane_index, structure, depth, depth_unit, coupled_plane_index,
+# scale_factor, scale_factor_unit, um_per_pixel, width, height.
+
+
+def _plane_records_v1(session: dict) -> List[Dict[str, Any]]:
+    """Rich per-plane records from a v1 ``session.json``.
+
+    v1 layout: ``data_streams[*].ophys_fovs[*]``; each FOV may carry an
+    ``index`` (defaults to 0 for single-plane) and a ``targeted_structure``.
+
+    Parameters
+    ----------
+    session : dict
+        Raw ``session.json`` dict.
+
+    Returns
+    -------
+    list of dict
+        Unsorted per-plane records.
+    """
+    records: List[Dict[str, Any]] = []
+    for stream in session.get("data_streams") or []:
+        for fov in stream.get("ophys_fovs") or []:
+            unit = (
+                fov.get("fov_coordinate_unit")
+                or fov.get("fov_scale_factor_unit")
+                or DEFAULT_LENGTH_UNIT
+            )
+            scale_factor = _as_float(fov.get("fov_scale_factor"))
+            records.append(
+                {
+                    "plane_index": _as_int(fov.get("index")) or 0,
+                    "structure": _acronym_from_targeted_structure(
+                        fov.get("targeted_structure")
+                    ),
+                    "depth": _as_float(fov.get("imaging_depth")),
+                    "depth_unit": fov.get("imaging_depth_unit")
+                    or DEFAULT_LENGTH_UNIT,
+                    "coupled_plane_index": _as_int(
+                        fov.get("coupled_fov_index")
+                    ),
+                    "scale_factor": scale_factor,
+                    "scale_factor_unit": unit,
+                    "um_per_pixel": _to_micrometers(scale_factor, unit),
+                    "width": _as_int(fov.get("fov_width")),
+                    "height": _as_int(fov.get("fov_height")),
+                }
+            )
+    return records
+
+
+def _plane_records_v2(acquisition: dict) -> List[Dict[str, Any]]:
+    """Rich per-plane records from a v2 ``acquisition.json``.
+
+    Layout: ``data_streams[*].configurations[ImagingConfig].images[*]
+    .planes[*]``.
+
+    Parameters
+    ----------
+    acquisition : dict
+        Raw ``acquisition.json`` dict.
+
+    Returns
+    -------
+    list of dict
+        Unsorted per-plane records.
+    """
+    records: List[Dict[str, Any]] = []
+    for config in _imaging_configs_v2(acquisition):
+        axis_unit = (config.get("coordinate_system") or {}).get("axis_unit")
+        for image in config.get("images") or []:
+            if image.get("object_type") != _V2_FOV_IMAGE_TYPE:
+                continue
+            dimensions = (image.get("dimensions") or {}).get("scale") or []
+            scale_factor = _first_scale_v2(
+                image.get("image_to_acquisition_transform")
+            )
+            unit = (
+                axis_unit
+                or image.get("dimensions_unit")
+                or DEFAULT_LENGTH_UNIT
+            )
+            for plane in image.get("planes") or []:
+                records.append(
+                    {
+                        "plane_index": _as_int(plane.get("plane_index")) or 0,
+                        "structure": _acronym_from_targeted_structure(
+                            plane.get("targeted_structure")
+                        ),
+                        "depth": _as_float(plane.get("depth")),
+                        "depth_unit": plane.get("depth_unit")
+                        or DEFAULT_LENGTH_UNIT,
+                        "coupled_plane_index": _as_int(
+                            plane.get("coupled_plane_index")
+                        ),
+                        "scale_factor": scale_factor,
+                        "scale_factor_unit": unit,
+                        "um_per_pixel": _to_micrometers(scale_factor, unit),
+                        "width": (
+                            _as_int(dimensions[0])
+                            if len(dimensions) > 0
+                            else None
+                        ),
+                        "height": (
+                            _as_int(dimensions[1])
+                            if len(dimensions) > 1
+                            else None
+                        ),
+                    }
+                )
+    return records
+
+
+def _plane_records_minimal(blob: dict) -> List[Dict[str, Any]]:
+    """Rich per-plane records from a minimal ``metadata.json``.
+
+    Each entry of ``planes`` carries the same key names the records use, so
+    the read is a copy with coercion. ``plane_index`` defaults to the entry's
+    position, and ``um_per_pixel`` is already in micrometres by definition.
+
+    Parameters
+    ----------
+    blob : dict
+        Raw ``metadata.json`` dict.
+
+    Returns
+    -------
+    list of dict
+        Per-plane records in document order.
+    """
+    records: List[Dict[str, Any]] = []
+    for position, plane in enumerate(blob.get("planes") or []):
+        um_per_pixel = _as_float(plane.get("um_per_pixel"))
+        index = _as_int(plane.get("plane_index"))
+        records.append(
+            {
+                "plane_index": position if index is None else index,
+                "structure": plane.get("structure"),
+                "depth": _as_float(plane.get("depth")),
+                "depth_unit": plane.get("depth_unit") or DEFAULT_LENGTH_UNIT,
+                "coupled_plane_index": _as_int(
+                    plane.get("coupled_plane_index")
+                ),
+                "scale_factor": um_per_pixel,
+                "scale_factor_unit": DEFAULT_LENGTH_UNIT,
+                "um_per_pixel": um_per_pixel,
+                "width": _as_int(plane.get("width")),
+                "height": _as_int(plane.get("height")),
+            }
+        )
+    return records
+
+
+# ---------------------------------------------------------------------------
+# v2 traversal helpers
+# ---------------------------------------------------------------------------
+
+
+def _imaging_configs_v2(acquisition: dict) -> List[dict]:
+    """Return the v2 ``ImagingConfig`` dicts of an acquisition.
+
+    Parameters
+    ----------
+    acquisition : dict
+        Raw ``acquisition.json`` dict.
+
+    Returns
+    -------
+    list of dict
+        The imaging configuration dicts, in document order.
+    """
+    configs = []
+    for stream in acquisition.get("data_streams") or []:
+        for config in stream.get("configurations") or []:
+            if config.get("object_type") == _V2_IMAGING_CONFIG_TYPE:
+                configs.append(config)
+    return configs
+
+
+def _first_scale_v2(transforms: Any) -> Optional[float]:
+    """First scale component of a v2 image-to-acquisition transform chain.
+
+    Consumers need one isotropic number, so the first component wins.
+
+    ``PlanarImage.dimensions`` is deliberately not read here: those are pixel
+    dimensions, so reading them would silently yield e.g. 512.
+
+    Parameters
+    ----------
+    transforms : Any
+        Raw ``image_to_acquisition_transform`` list.
+
+    Returns
+    -------
+    float or None
+        The first scale component, or ``None`` when no ``Scale`` is present.
+    """
+    for transform in transforms or []:
+        if not isinstance(transform, dict):
+            continue
+        if transform.get("object_type") != _V2_SCALE_TYPE:
+            continue
+        scale = transform.get("scale") or []
+        if scale:
+            return _as_float(scale[0])
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -383,3 +790,77 @@ class CoreMetadata:
             The dataset name, or ``None`` if no source provides one.
         """
         return _dataset_name(self.data_description_raw, self.core_raw)
+
+    def get_plane_records(self) -> List[Dict[str, Any]]:
+        """Per-plane records as plain dicts.
+
+        Plain dicts rather than a dataclass, so a new per-plane field is an
+        additive change to one reader instead of a change to a shared type
+        plus every version's construction of it.
+
+        Returns
+        -------
+        list of dict
+            Unsorted unique records, keyed ``plane_index``, ``structure``,
+            ``depth``, ``depth_unit``, ``coupled_plane_index``,
+            ``scale_factor``, ``scale_factor_unit``, ``um_per_pixel``,
+            ``width``, ``height``.
+            Pair them with canonical ids by sorting on ``plane_index`` and
+            zipping against :meth:`get_fov_ids`.
+
+        Raises
+        ------
+        ValueError
+            If this document's schema version is unrecognised, or repeated
+            records for one physical plane conflict.
+        """
+        if self.version is SchemaVersion.V1:
+            records = _plane_records_v1(self.core_raw)
+        elif self.version is SchemaVersion.V2:
+            records = _plane_records_v2(self.core_raw)
+        else:
+            records = _plane_records_minimal(self.core_raw)
+        return _deduplicate_plane_records(records)
+
+    def get_fov_ids(self) -> Tuple[str, ...]:
+        """Canonical plane ids, ordered by plane index.
+
+        The ids name output folders, so they must be identical across every
+        capsule reading the same input.
+
+        Returns
+        -------
+        tuple of str
+            One id per plane; empty when the document lists no planes.
+
+        Raises
+        ------
+        ValueError
+            If this document's schema version is unrecognised.
+        """
+        return build_fov_ids(_pairs_from_records(self.get_plane_records()))
+
+    def get_um_per_pixel(self) -> Optional[float]:
+        """Micrometres per pixel for the acquisition.
+
+        Read from the lowest-indexed plane, since the value is a property of
+        the optical path and every plane of one acquisition shares it.
+
+        Returns
+        -------
+        float or None
+            Micrometres per pixel, or ``None`` when the document declares no
+            scale or declares it in a unit that cannot be converted. A caller
+            computing with the value should refuse to default rather than
+            assume 1.0.
+
+        Raises
+        ------
+        ValueError
+            If this document's schema version is unrecognised.
+        """
+        records = self.get_plane_records()
+        for record in sorted(records, key=lambda r: r["plane_index"]):
+            if record["um_per_pixel"] is not None:
+                return record["um_per_pixel"]
+        return None
