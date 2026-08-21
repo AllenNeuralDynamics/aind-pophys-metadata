@@ -1,5 +1,9 @@
 """Shared AIND pophys metadata reads and output builders."""
 
+from aind_pophys_metadata.core import (
+    DEFAULT_LENGTH_UNIT,
+    CoreMetadata,
+)
 from aind_pophys_metadata.io import (
     DATA_DESCRIPTION_FILE,
     MINIMAL_CORE_FILE,
@@ -29,6 +33,8 @@ from aind_pophys_metadata.naming import (
 __version__ = "0.1.0"
 
 __all__ = [
+    "DEFAULT_LENGTH_UNIT",
+    "CoreMetadata",
     "DATA_DESCRIPTION_FILE",
     "MINIMAL_CORE_FILE",
     "PLATFORM_FILE",
