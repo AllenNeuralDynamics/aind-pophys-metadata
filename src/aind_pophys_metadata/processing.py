@@ -20,6 +20,8 @@ CGROUP_MEMORY_LIMIT_FILES = (
 CPU_INFO_FILE = "/proc/cpuinfo"
 CPU_MODEL_KEY = "model name"
 UNKNOWN = "unknown"
+CO_CPUS_ENV = "CO_CPUS"
+CO_MEMORY_ENV = "CO_MEMORY"
 
 
 def _cpu_model() -> Optional[str]:
@@ -69,20 +71,31 @@ def collect_static_resources() -> ResourceUsage:
     Nothing is sampled over time, so every ``*_usage`` field stays ``None``
     rather than carrying one misleading instantaneous reading. Each read is
     guarded independently, so a missing procfs or cgroup leaves that field
-    ``None`` rather than failing the job.
+    ``None`` rather than failing the job. Code Ocean's requested resources
+    take precedence over host and cgroup observations when those environment
+    values are available.
 
     Returns
     -------
     ResourceUsage
         The populated static resource description.
     """
-    memory_bytes = _cgroup_memory_bytes()
+    cpu_cores = (
+        int(os.environ[CO_CPUS_ENV])
+        if os.getenv(CO_CPUS_ENV)
+        else os.cpu_count()
+    )
+    memory_bytes = (
+        float(os.environ[CO_MEMORY_ENV])
+        if os.getenv(CO_MEMORY_ENV)
+        else _cgroup_memory_bytes()
+    )
     memory_unit = MemoryUnit.B if memory_bytes is not None else None
     return ResourceUsage(
         os=platform_mod.system() or UNKNOWN,
         architecture=platform_mod.machine() or UNKNOWN,
         cpu=_cpu_model(),
-        cpu_cores=os.cpu_count(),
+        cpu_cores=cpu_cores,
         system_memory=memory_bytes,
         system_memory_unit=memory_unit,
         ram=memory_bytes,

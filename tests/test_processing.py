@@ -82,6 +82,53 @@ class TestStaticResources(unittest.TestCase):
         self.assertIsNone(ru.ram_usage)
         self.assertIsNone(ru.gpu_usage)
 
+    def test_collect_static_resources_prefers_code_ocean_environment(
+        self,
+    ) -> None:
+        """Code Ocean's requested CPU and memory are recorded exactly."""
+        with (
+            patch.dict(
+                os.environ,
+                {"CO_CPUS": "4", "CO_MEMORY": "34359738368"},
+            ),
+            patch.object(
+                processing,
+                "_cgroup_memory_bytes",
+                side_effect=AssertionError("cgroup should be fallback only"),
+            ),
+            patch.object(
+                os,
+                "cpu_count",
+                side_effect=AssertionError(
+                    "cpu_count should be fallback only"
+                ),
+            ),
+        ):
+            ru = processing.collect_static_resources()
+
+        self.assertEqual(ru.cpu_cores, 4)
+        self.assertEqual(ru.system_memory, 34359738368.0)
+        self.assertEqual(ru.system_memory_unit, MemoryUnit.B)
+        self.assertEqual(ru.ram, 34359738368.0)
+        self.assertEqual(ru.ram_unit, MemoryUnit.B)
+
+    def test_collect_static_resources_uses_standalone_fallbacks(self) -> None:
+        """Standalone runs use logical CPUs and the cgroup memory limit."""
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(os, "cpu_count", return_value=6),
+            patch.object(
+                processing,
+                "_cgroup_memory_bytes",
+                return_value=2147483648.0,
+            ),
+        ):
+            ru = processing.collect_static_resources()
+
+        self.assertEqual(ru.cpu_cores, 6)
+        self.assertEqual(ru.system_memory, 2147483648.0)
+        self.assertEqual(ru.system_memory_unit, MemoryUnit.B)
+
     def test_cpu_model_read_from_cpuinfo(self) -> None:
         """The first model-name line is returned."""
         content = "processor\t: 0\nmodel name\t: Fake CPU X1\n"
