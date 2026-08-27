@@ -184,8 +184,6 @@ class CoreMetadata:
         ------
         ValueError
             If ``required`` and the id is missing.
-        ValueError
-            If this document's schema version is unrecognised.
         """
         key = "rig_id" if self.version is SchemaVersion.V1 else "instrument_id"
         if required:
