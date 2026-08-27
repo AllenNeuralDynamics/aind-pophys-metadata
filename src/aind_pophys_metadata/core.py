@@ -945,7 +945,12 @@ class CoreMetadata:
             return _excitation_wavelength_v1(self.core_raw)
         if self.version is SchemaVersion.V2:
             return _excitation_wavelength_v2(self.core_raw)
-        return _as_float(self.core_raw.get("excitation_nm"))
+        if self.version is SchemaVersion.MINIMAL:
+            return _as_float(self.core_raw.get("excitation_nm"))
+        raise ValueError(
+            f"Unrecognised schema version {self.version!r}; "
+            "cannot read excitation wavelength."
+        )
 
     def get_emission_wavelength(self) -> Optional[float]:
         """Emission wavelength in nm.
@@ -967,6 +972,11 @@ class CoreMetadata:
             return None
         if self.version is SchemaVersion.MINIMAL:
             return _as_float(self.core_raw.get("emission_nm"))
+        if self.version is not SchemaVersion.V2:
+            raise ValueError(
+                f"Unrecognised schema version {self.version!r}; "
+                "cannot read emission wavelength."
+            )
         for config in _imaging_configs_v2(self.core_raw):
             for channel in config.get("channels") or []:
                 wavelength = _as_float(channel.get("emission_wavelength"))
