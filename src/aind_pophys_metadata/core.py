@@ -317,8 +317,13 @@ class CoreMetadata:
             rate = _frame_rate_v1(self.core_raw)
         elif self.version is SchemaVersion.V2:
             rate = _frame_rate_v2(self.core_raw)
-        else:
+        elif self.version is SchemaVersion.MINIMAL:
             rate = _frame_rate_minimal(self.core_raw)
+        else:
+            raise ValueError(
+                f"Unrecognised schema version {self.version!r}; "
+                "cannot read frame rate."
+            )
         if rate is None and self.platform_raw is not None:
             rate = _frame_rate_platform(self.platform_raw)
         if rate is None and cli_override is not None:
