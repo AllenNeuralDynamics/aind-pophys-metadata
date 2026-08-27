@@ -197,7 +197,9 @@ def find_core_file(input_dir: Path) -> Path:
     Raises
     ------
     ValueError
-        If both ``acquisition.json`` and ``session.json`` are present.
+        If more than one core file is present (an ``acquisition.json``
+        alongside a ``session.json``, or multiple of either), or if
+        multiple ``metadata.json`` files are present.
     FileNotFoundError
         If none of the three core files is present.
     """
@@ -287,9 +289,9 @@ def reject_whole_record(core_raw: dict) -> None:
     Raises
     ------
     ValueError
-        If the dict carries a ``session`` or ``acquisition`` key.
+        If the dict carries an ``acquisition`` or ``session`` key.
     """
-    for key in (V1_CORE_FILE, V2_CORE_FILE):
+    for key in (V2_CORE_FILE, V1_CORE_FILE):
         nested = key.removesuffix(".json")
         if nested in core_raw:
             raise ValueError(
@@ -299,7 +301,7 @@ def reject_whole_record(core_raw: dict) -> None:
             )
 
 
-def object_type_value(cls) -> str:
+def object_type_value(cls: type) -> str:
     """Return a v2 schema class's ``object_type`` discriminator default.
 
     Read from ``model_fields`` rather than hardcoded, so callers stay correct
