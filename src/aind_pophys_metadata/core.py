@@ -818,8 +818,13 @@ class CoreMetadata:
             records = _plane_records_v1(self.core_raw)
         elif self.version is SchemaVersion.V2:
             records = _plane_records_v2(self.core_raw)
-        else:
+        elif self.version is SchemaVersion.MINIMAL:
             records = _plane_records_minimal(self.core_raw)
+        else:
+            raise ValueError(
+                f"Unrecognised schema version {self.version!r}; "
+                "cannot read plane records."
+            )
         return _deduplicate_plane_records(records)
 
     def get_fov_ids(self) -> Tuple[str, ...]:
