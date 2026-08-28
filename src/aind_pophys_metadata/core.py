@@ -33,6 +33,12 @@ _V2_LASER_CONFIG_TYPE = object_type_value(LaserConfig)
 
 DEFAULT_LENGTH_UNIT = "micrometer"
 
+# The data stream covering an epoch carries that epoch's TIFF stem in its
+# notes, in v1 and v2 alike. Checked against 60 raw Bergamo assets: all 60
+# carried this note and the v1-only output_parameters.tiff_stem, agreeing.
+_TIFF_STEM_NOTE_PREFIX = "tiff_stem:"
+_TIFF_STEM_KEY = "tiff_stem"
+
 
 # ---------------------------------------------------------------------------
 # Frame rate
@@ -654,6 +660,94 @@ def _excitation_wavelength_v2(acquisition: dict) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
+# Stimulus epochs
+# ---------------------------------------------------------------------------
+
+
+def _tiff_stems_by_start_time(core_raw: dict) -> Dict[Any, str]:
+    """Index data-stream TIFF stems by stream start time.
+
+    Parameters
+    ----------
+    core_raw : dict
+        Raw core metadata dict.
+
+    Returns
+    -------
+    dict
+        Mapping of ``stream_start_time`` to TIFF stem.
+    """
+    stems: Dict[Any, str] = {}
+    for stream in core_raw.get("data_streams") or []:
+        notes = stream.get("notes") or ""
+        if notes.startswith(_TIFF_STEM_NOTE_PREFIX):
+            stems[stream.get("stream_start_time")] = notes[
+                len(_TIFF_STEM_NOTE_PREFIX) :
+            ]
+    return stems
+
+
+def _epoch_records(core_raw: dict) -> List[Dict[str, Any]]:
+    """Stimulus epochs as plain dicts, for any schema version.
+
+    No version parameter: the stream-notes join works for v1 and v2 alike,
+    with ``output_parameters.tiff_stem`` as a fallback.
+
+    Order is exactly as recorded. Document order is not chronological in real
+    assets, and reordering would change which frames each epoch maps to.
+
+    Parameters
+    ----------
+    core_raw : dict
+        Raw core metadata dict.
+
+    Returns
+    -------
+    list of dict
+        One record per epoch with keys ``stimulus_name``, ``start_time``,
+        ``tiff_stem`` (``None`` when the document carries neither route) and
+        ``modalities``.
+    """
+    by_start_time = _tiff_stems_by_start_time(core_raw)
+    epochs = core_raw.get("stimulus_epochs")
+    if epochs is None:
+        epochs = core_raw.get("epochs") or []
+    records: List[Dict[str, Any]] = []
+    for epoch in epochs:
+        start_time = epoch.get("stimulus_start_time", epoch.get("start_time"))
+        from_notes = by_start_time.get(start_time)
+        from_epoch = (epoch.get("output_parameters") or {}).get(
+            _TIFF_STEM_KEY
+        ) or epoch.get(_TIFF_STEM_KEY)
+        if from_notes and from_epoch and from_notes != from_epoch:
+            logger.warning(
+                "Stimulus epoch %r at %s carries two disagreeing TIFF stems: "
+                "stream note %r and output_parameters %r. Using the stream "
+                "note. All 60 audited Bergamo assets agreed, so a "
+                "disagreement means the rig-side convention has changed.",
+                epoch.get("stimulus_name"),
+                start_time,
+                from_notes,
+                from_epoch,
+            )
+        stem = from_notes or from_epoch
+        modalities = (
+            epoch.get("stimulus_modalities")
+            if epoch.get("stimulus_modalities") is not None
+            else epoch.get("modalities")
+        )
+        records.append(
+            {
+                "stimulus_name": epoch.get("stimulus_name"),
+                "start_time": start_time,
+                "tiff_stem": stem or None,
+                "modalities": tuple(str(m) for m in modalities or []),
+            }
+        )
+    return records
+
+
+# ---------------------------------------------------------------------------
 # The public surface
 # ---------------------------------------------------------------------------
 
@@ -983,3 +1077,17 @@ class CoreMetadata:
                 if wavelength is not None:
                     return wavelength
         return None
+
+    def get_epoch_records(self) -> List[Dict[str, Any]]:
+        """Stimulus epochs as plain dicts, in the order recorded.
+
+        No version branch, because no version needs one -- see
+        :func:`_epoch_records`.
+
+        Returns
+        -------
+        list of dict
+            One record per epoch, keyed ``stimulus_name``, ``start_time``,
+            ``tiff_stem`` and ``modalities``.
+        """
+        return _epoch_records(self.core_raw)

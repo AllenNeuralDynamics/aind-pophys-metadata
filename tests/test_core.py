@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import logging
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from aind_data_schema.components.configs import (
     ImagingConfig,
     LaserConfig,
     PlanarImage,
+    PlanarImageStack,
 )
 from aind_data_schema.components.coordinates import Scale
 
@@ -19,6 +21,7 @@ from aind_pophys_metadata.core import CoreMetadata
 
 _IMAGING = io.object_type_value(ImagingConfig)
 _PLANAR = io.object_type_value(PlanarImage)
+_STACK = io.object_type_value(PlanarImageStack)
 _SCALE = io.object_type_value(Scale)
 _LASER = io.object_type_value(LaserConfig)
 
@@ -627,6 +630,56 @@ class TestPlaneRecordDeduplication(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "plane index 0"):
             _direct(io.SCHEMA_V1, session).get_plane_records()
 
+    def test_upgraded_v2_stack_and_epoch_images(self) -> None:
+        """Upgraded Bergamo shape ignores stack channels and keeps epochs."""
+        stack = _planar_image(
+            [
+                {
+                    "plane_index": None,
+                    "targeted_structure": {"acronym": "MO"},
+                    "depth": 90,
+                }
+            ]
+        )
+        stack["object_type"] = _STACK
+        epoch_plane = _planar_image(
+            [
+                {
+                    "plane_index": None,
+                    "targeted_structure": {"acronym": "MO"},
+                    "depth": 110,
+                }
+            ]
+        )
+        acquisition = _v2_from_images(
+            [stack, epoch_plane, dict(epoch_plane), dict(epoch_plane)]
+        )
+        acquisition["stimulus_epochs"] = [
+            {
+                "stimulus_name": "spontaneous activity",
+                "output_parameters": {"tiff_stem": "spont"},
+            },
+            {
+                "stimulus_name": "spontaneous activity",
+                "output_parameters": {"tiff_stem": "spontpost"},
+            },
+            {
+                "stimulus_name": "single neuron BCI conditioning",
+                "output_parameters": {
+                    "tiff_stem": "neuron8_to_17_again_again"
+                },
+            },
+        ]
+        metadata = _direct(io.SCHEMA_V2, acquisition)
+        records = metadata.get_plane_records()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["depth"], 110.0)
+        self.assertEqual(metadata.get_fov_ids(), ("plane_0",))
+        self.assertEqual(
+            [e["tiff_stem"] for e in metadata.get_epoch_records()],
+            ["spont", "spontpost", "neuron8_to_17_again_again"],
+        )
+
 
 class TestGetFovIds(_CoreFileCase):
     """Canonical plane ids from every document shape."""
@@ -746,6 +799,24 @@ class TestUnknownVersionRefusedAtConstruction(unittest.TestCase):
                 io.SchemaVersion.MINIMAL,
             },
         )
+
+
+class TestVersionIndependentReads(unittest.TestCase):
+    """The three reads that need no version branch."""
+
+    def test_they_work_for_every_version(self) -> None:
+        """subject id, dataset name and epochs read alike from all three."""
+        raw = {
+            "subject_id": "1",
+            "dataset_name": "ds",
+            "stimulus_epochs": [{"stimulus_name": "spont"}],
+        }
+        for version in io.SchemaVersion:
+            with self.subTest(version=str(version)):
+                built = _direct(version, raw)
+                self.assertEqual(built.get_subject_id(), "1")
+                self.assertEqual(built.get_dataset_name(), "ds")
+                self.assertEqual(len(built.get_epoch_records()), 1)
 
 
 class TestAsInt(unittest.TestCase):
@@ -1386,6 +1457,207 @@ class TestEmissionWavelength(_CoreFileCase):
         """The minimal document spells it emission_nm."""
         loaded = self.load(io.MINIMAL_CORE_FILE, {"emission_nm": 515})
         self.assertEqual(loaded.get_emission_wavelength(), 515.0)
+
+
+class TestTiffStemsByStartTime(unittest.TestCase):
+    """The rig-side stream-notes index the epoch join uses."""
+
+    def test_indexes_prefixed_notes_only(self) -> None:
+        """A stream whose notes carry no stem is not indexed."""
+        core_raw = {
+            "data_streams": [
+                {"stream_start_time": "T1", "notes": "tiff_stem:stem_a"},
+                {"stream_start_time": "T2", "notes": "nothing to see"},
+                {"stream_start_time": "T3"},
+            ]
+        }
+        self.assertEqual(
+            core._tiff_stems_by_start_time(core_raw), {"T1": "stem_a"}
+        )
+
+    def test_no_streams(self) -> None:
+        """A document with no data streams yields an empty index."""
+        self.assertEqual(core._tiff_stems_by_start_time({}), {})
+
+
+class TestDisagreeingTiffStems(unittest.TestCase):
+    """A document whose two stem routes disagree is reported, not trusted."""
+
+    def test_disagreement_warns_and_prefers_the_stream_note(self) -> None:
+        """The note wins, and the divergence reaches the log."""
+        core_raw = {
+            "data_streams": [
+                {"stream_start_time": "T1", "notes": "tiff_stem:from_note"}
+            ],
+            "stimulus_epochs": [
+                {
+                    "stimulus_name": "spont",
+                    "stimulus_start_time": "T1",
+                    "output_parameters": {"tiff_stem": "from_epoch"},
+                }
+            ],
+        }
+        with self.assertLogs(core.logger, level="WARNING") as logged:
+            records = core._epoch_records(core_raw)
+        self.assertEqual(records[0]["tiff_stem"], "from_note")
+        message = "".join(logged.output)
+        self.assertIn("from_note", message)
+        self.assertIn("from_epoch", message)
+
+    def test_agreement_is_silent(self) -> None:
+        """The audited case, where both routes carry the same stem."""
+        core_raw = {
+            "data_streams": [
+                {"stream_start_time": "T1", "notes": "tiff_stem:spont"}
+            ],
+            "stimulus_epochs": [
+                {
+                    "stimulus_name": "spont",
+                    "stimulus_start_time": "T1",
+                    "output_parameters": {"tiff_stem": "spont"},
+                }
+            ],
+        }
+        with self.assertNoLogs(core.logger, level="WARNING"):
+            records = core._epoch_records(core_raw)
+        self.assertEqual(records[0]["tiff_stem"], "spont")
+
+
+class TestEpochRecords(_CoreFileCase):
+    """Stimulus epochs read identically from every document shape."""
+
+    EXPECTED = [
+        {
+            "stimulus_name": "spont",
+            "start_time": "T1",
+            "tiff_stem": "stem_a",
+            "modalities": ("Visual",),
+        }
+    ]
+
+    def test_v1_output_parameters_route(self) -> None:
+        """v1 recorded the stem under stimulus_epochs output_parameters."""
+        core_raw = {
+            "stimulus_epochs": [
+                {
+                    "stimulus_name": "spont",
+                    "stimulus_start_time": "T1",
+                    "stimulus_modalities": ["Visual"],
+                    "output_parameters": {"tiff_stem": "stem_a"},
+                }
+            ]
+        }
+        loaded = _direct(io.SCHEMA_V1, core_raw, name="session.json")
+        self.assertEqual(loaded.get_epoch_records(), self.EXPECTED)
+
+    def test_v2_stream_notes_route(self) -> None:
+        """v2 drops output_parameters, leaving the start-time join."""
+        core_raw = {
+            "data_streams": [
+                {"stream_start_time": "T1", "notes": "tiff_stem:stem_a"}
+            ],
+            "stimulus_epochs": [
+                {
+                    "stimulus_name": "spont",
+                    "stimulus_start_time": "T1",
+                    "stimulus_modalities": ["Visual"],
+                }
+            ],
+        }
+        loaded = _direct(io.SCHEMA_V2, core_raw)
+        self.assertEqual(loaded.get_epoch_records(), self.EXPECTED)
+
+    def test_both_routes_agree(self) -> None:
+        """Real v1 assets carry both; the cross-check must not conflict."""
+        core_raw = {
+            "data_streams": [
+                {"stream_start_time": "T1", "notes": "tiff_stem:stem_a"}
+            ],
+            "stimulus_epochs": [
+                {
+                    "stimulus_name": "spont",
+                    "stimulus_start_time": "T1",
+                    "stimulus_modalities": ["Visual"],
+                    "output_parameters": {"tiff_stem": "stem_a"},
+                }
+            ],
+        }
+        self.assertEqual(core._epoch_records(core_raw), self.EXPECTED)
+
+    def test_minimal_document(self) -> None:
+        """The minimal document spells the same four fields itself."""
+        loaded = self.load(
+            io.MINIMAL_CORE_FILE,
+            {
+                "epochs": [
+                    {
+                        "stimulus_name": "spont",
+                        "start_time": "T1",
+                        "tiff_stem": "stem_a",
+                        "modalities": ["Visual"],
+                    }
+                ]
+            },
+        )
+        self.assertEqual(loaded.get_epoch_records(), self.EXPECTED)
+
+    def test_no_version_parameter(self) -> None:
+        """One reader covers all versions, so no version is passed in."""
+        self.assertEqual(
+            core._epoch_records.__code__.co_varnames[:1], ("core_raw",)
+        )
+
+    def test_neither_route_yields_none_without_raising(self) -> None:
+        """Requiring a stem is the call site's job, not the reader's."""
+        core_raw = {"stimulus_epochs": [{"stimulus_name": "spont"}]}
+        (record,) = core._epoch_records(core_raw)
+        self.assertIsNone(record["tiff_stem"])
+        self.assertIsNone(record["start_time"])
+        self.assertEqual(record["modalities"], ())
+
+    def test_document_order_is_preserved_exactly(self) -> None:
+        """Reordering would change which frame range each epoch maps to."""
+        core_raw = {
+            "stimulus_epochs": [
+                {
+                    "stimulus_name": "third",
+                    "stimulus_start_time": "T3",
+                    "output_parameters": {"tiff_stem": "stem_c"},
+                },
+                {
+                    "stimulus_name": "first",
+                    "stimulus_start_time": "T1",
+                    "output_parameters": {"tiff_stem": "stem_a"},
+                },
+                {
+                    "stimulus_name": "second",
+                    "stimulus_start_time": "T2",
+                    "output_parameters": {"tiff_stem": "stem_b"},
+                },
+            ]
+        }
+        records = core._epoch_records(core_raw)
+        self.assertEqual(
+            [r["tiff_stem"] for r in records],
+            ["stem_c", "stem_a", "stem_b"],
+        )
+        self.assertEqual(
+            [r["start_time"] for r in records], ["T3", "T1", "T2"]
+        )
+
+    def test_modalities_are_coerced_to_a_tuple_of_strings(self) -> None:
+        """An immutable field keeps a frozen consumer dataclass hashable."""
+        core_raw = {
+            "stimulus_epochs": [
+                {"stimulus_modalities": ["Visual", "Auditory"]}
+            ]
+        }
+        (record,) = core._epoch_records(core_raw)
+        self.assertEqual(record["modalities"], ("Visual", "Auditory"))
+
+    def test_module_logger_is_the_one_readers_warn_on(self) -> None:
+        """The warnings the fleet greps for carry this module's name."""
+        self.assertEqual(core.logger, logging.getLogger(core.__name__))
 
 
 if __name__ == "__main__":
