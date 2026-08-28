@@ -3,10 +3,12 @@
 import importlib.metadata
 import os
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import mock_open, patch
 
 from aind_data_schema.components.identifiers import Code
 from aind_data_schema.core.processing import ResourceUsage
+from aind_data_schema_models.process_names import ProcessName
 from aind_data_schema_models.units import MemoryUnit
 
 from aind_pophys_metadata import processing
@@ -15,6 +17,9 @@ from aind_pophys_metadata import processing
 # to find; the library under test is always installed in its own test run.
 _INSTALLED_LIBRARY = "aind-pophys-metadata"
 _URL = "https://github.com/AllenNeuralDynamics/aind-pophys-metadata"
+
+_START = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
+_END = datetime(2024, 1, 1, 12, 30, tzinfo=timezone.utc)
 
 
 class TestProcessing(unittest.TestCase):
@@ -51,6 +56,59 @@ class TestProcessing(unittest.TestCase):
         )
         self.assertEqual(len(code.input_data), 2)
         self.assertEqual(code.language_version, "3.10.0")
+
+    def test_build_data_process_minimal(self) -> None:
+        """A minimal data process carries its type and empty experimenters."""
+        dp = processing.build_data_process(
+            process_type=ProcessName.VIDEO_MOTION_CORRECTION,
+            code=self._code(),
+            start_time=_START,
+            end_time=_END,
+        )
+        self.assertEqual(dp.experimenters, [])
+        self.assertEqual(dp.process_type, ProcessName.VIDEO_MOTION_CORRECTION)
+
+    def test_build_data_process_full(self) -> None:
+        """All optional fields flow through to the data process."""
+        dp = processing.build_data_process(
+            process_type=ProcessName.OTHER,
+            code=self._code(),
+            start_time=_START,
+            end_time=_END,
+            name="step",
+            experimenters=["AIND"],
+            output_path="results/",
+            output_parameters={"m": 1},
+            notes="ok",
+            resources=processing.collect_static_resources(),
+            pipeline_name="pipe",
+        )
+        self.assertEqual(dp.name, "step")
+        self.assertEqual(dp.pipeline_name, "pipe")
+        self.assertEqual(dp.notes, "ok")
+
+    def test_plane_id_qualifies_derived_name(self) -> None:
+        """plane_id prefixes the process-type label when name is omitted."""
+        dp = processing.build_data_process(
+            process_type=ProcessName.VIDEO_MOTION_CORRECTION,
+            code=self._code(),
+            start_time=_START,
+            end_time=_END,
+            plane_id="VISp_0",
+        )
+        self.assertEqual(dp.name, "VISp_0: Video motion correction")
+
+    def test_plane_id_qualifies_explicit_name(self) -> None:
+        """plane_id prefixes an explicit name instead of replacing it."""
+        dp = processing.build_data_process(
+            process_type=ProcessName.VIDEO_MOTION_CORRECTION,
+            code=self._code(),
+            start_time=_START,
+            end_time=_END,
+            name="Suite2P motion correction",
+            plane_id="VISl_3",
+        )
+        self.assertEqual(dp.name, "VISl_3: Suite2P motion correction")
 
 
 class TestLibraryVersion(unittest.TestCase):
