@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aind-pophys-metadata"
-description = "Generated from aind-library-template"
+description = "Shared AIND pophys metadata reads and Processing/QualityControl builders."
 license = "MIT"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 authors = [
     {name = "Allen Institute for Neural Dynamics"}
 ]
@@ -17,6 +17,10 @@ readme = "README.md"
 version = "0.1.0"
 
 dependencies = [
+    "aind-data-schema==2.9.0",
+    "aind-data-schema-models==6.2.0",
+    "aind-qcportal-schema==0.6.4",
+    "pytz",
 ]
 
 [dependency-groups]
