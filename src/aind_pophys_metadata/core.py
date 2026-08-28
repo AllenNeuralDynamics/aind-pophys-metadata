@@ -3,14 +3,107 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+from aind_data_schema.components.configs import ImagingConfig
 
 from aind_pophys_metadata import io
-from aind_pophys_metadata.io import PLATFORM_FILE, SchemaVersion, require
+from aind_pophys_metadata.io import (
+    PLATFORM_FILE,
+    SchemaVersion,
+    object_type_value,
+    require,
+)
 
 logger = logging.getLogger(__name__)
 
+# v2 discriminator values, read from the schema classes (not hardcoded) so
+# they track the installed aind-data-schema version.
+_V2_IMAGING_CONFIG_TYPE = object_type_value(ImagingConfig)
+
 DEFAULT_LENGTH_UNIT = "micrometer"
+
+
+# ---------------------------------------------------------------------------
+# Frame rate
+# ---------------------------------------------------------------------------
+
+
+def _frame_rate_v1(session: dict) -> Optional[float]:
+    """Frame rate from a v1 session: first ophys_fov carrying a frame_rate.
+
+    Parameters
+    ----------
+    session : dict
+        Raw ``session.json`` dict.
+
+    Returns
+    -------
+    float or None
+        The frame rate in Hz, or ``None`` if no FOV declares one.
+    """
+    for stream in session.get("data_streams") or []:
+        for fov in stream.get("ophys_fovs") or []:
+            if fov.get("frame_rate") is not None:
+                return float(fov["frame_rate"])
+    return None
+
+
+def _frame_rate_v2(acquisition: dict) -> Optional[float]:
+    """Frame rate from a v2 ``ImagingConfig.sampling_strategy.frame_rate``.
+
+    Parameters
+    ----------
+    acquisition : dict
+        Raw ``acquisition.json`` dict.
+
+    Returns
+    -------
+    float or None
+        The frame rate in Hz, or ``None`` if no imaging config declares one.
+    """
+    for stream in acquisition.get("data_streams") or []:
+        for config in stream.get("configurations") or []:
+            if config.get("object_type") == _V2_IMAGING_CONFIG_TYPE:
+                sampling = config.get("sampling_strategy") or {}
+                if sampling.get("frame_rate") is not None:
+                    return float(sampling["frame_rate"])
+    return None
+
+
+def _frame_rate_platform(platform: dict) -> Optional[float]:
+    """Frame rate from a v1 ``platform.json`` imaging_plane_groups fallback.
+
+    Parameters
+    ----------
+    platform : dict
+        Raw ``platform.json`` dict.
+
+    Returns
+    -------
+    float or None
+        The acquisition frame rate in Hz, or ``None`` if unavailable.
+    """
+    groups = platform.get("imaging_plane_groups") or []
+    if groups and groups[0].get("acquisition_framerate_Hz") is not None:
+        return float(groups[0]["acquisition_framerate_Hz"])
+    return None
+
+
+def _frame_rate_minimal(blob: dict) -> Optional[float]:
+    """Frame rate from a minimal ``metadata.json``.
+
+    Parameters
+    ----------
+    blob : dict
+        Raw ``metadata.json`` dict.
+
+    Returns
+    -------
+    float or None
+        The frame rate in Hz, or ``None`` when the key is absent.
+    """
+    return _as_float(blob.get("frame_rate"))
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +164,28 @@ def _dataset_name(
     if name is None:
         name = (core_raw or {}).get("dataset_name")
     return None if name is None else str(name)
+
+
+def _as_float(value: Any) -> Optional[float]:
+    """Coerce a raw metadata value to float, or return ``None``.
+
+    Parameters
+    ----------
+    value : Any
+        Raw value from the metadata dict; strings are common in v1.
+
+    Returns
+    -------
+    float or None
+        The coerced value, or ``None`` when absent or uncoercible.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning("Ignoring non-numeric metadata value %r", value)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +280,63 @@ class CoreMetadata:
                 input_dir, io.DATA_DESCRIPTION_FILE
             ),
         )
+
+    def get_frame_rate(
+        self,
+        *,
+        cli_override: Optional[float] = None,
+        required: bool = True,
+    ) -> Optional[float]:
+        """Frame rate in Hz, from the core file then ``platform.json``.
+
+        The fallback ladder lives here so the whole fleet fails with one
+        message rather than one reinvented per repo.
+
+        Parameters
+        ----------
+        cli_override : float, optional
+            Operator-supplied frame rate, used only when the metadata
+            provides none.
+        required : bool, optional
+            Raise when nothing supplies a frame rate instead of returning
+            ``None``.
+
+        Returns
+        -------
+        float or None
+            The frame rate in Hz, or ``None`` when unavailable and not
+            ``required``.
+
+        Raises
+        ------
+        ValueError
+            If ``required`` and no source supplies one, or if this document's
+            schema version is unrecognised.
+        """
+        if self.version is SchemaVersion.V1:
+            rate = _frame_rate_v1(self.core_raw)
+        elif self.version is SchemaVersion.V2:
+            rate = _frame_rate_v2(self.core_raw)
+        elif self.version is SchemaVersion.MINIMAL:
+            rate = _frame_rate_minimal(self.core_raw)
+        else:
+            raise ValueError(
+                f"Unrecognised schema version {self.version!r}; "
+                "cannot read frame rate."
+            )
+        if rate is None and self.platform_raw is not None:
+            rate = _frame_rate_platform(self.platform_raw)
+        if rate is None and cli_override is not None:
+            logger.warning("Using CLI fallback frame rate: %s", cli_override)
+            rate = cli_override
+        if rate is None and required:
+            raise ValueError(
+                f"No frame rate found in {self.core_path.name} (schema "
+                f"{self.version}) or {PLATFORM_FILE} under "
+                f"{self.input_dir or 'the input directory'}, and no CLI "
+                "override was supplied."
+            )
+        return None if rate is None else float(rate)
 
     def get_instrument_id(self, *, required: bool = False) -> Optional[str]:
         """Instrument/rig identifier (v1 ``rig_id``, else ``instrument_id``).

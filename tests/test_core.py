@@ -18,6 +18,30 @@ _PLANAR = io.object_type_value(PlanarImage)
 UNKNOWN_VERSION = "v3"
 
 
+def _v1_session(
+    frame_rate: Optional[float] = None,
+    fovs: Optional[List[dict]] = None,
+) -> dict:
+    """Build a minimal v1 session dict with one data stream.
+
+    Parameters
+    ----------
+    frame_rate : float, optional
+        Frame rate declared by the single default FOV.
+    fovs : list of dict, optional
+        Explicit ``ophys_fovs`` entries, replacing the default FOV.
+
+    Returns
+    -------
+    dict
+        A raw ``session.json`` dict.
+    """
+    fov = {}
+    if frame_rate is not None:
+        fov["frame_rate"] = frame_rate
+    return {"data_streams": [{"ophys_fovs": fovs or [fov]}]}
+
+
 def _v2_acquisition(
     frame_rate: Optional[float] = None,
     planes: Optional[List[dict]] = None,
@@ -185,6 +209,142 @@ class TestLoad(_CoreFileCase):
         loaded = self.load(io.V1_CORE_FILE, {})
         with self.assertRaises(dataclasses.FrozenInstanceError):
             loaded.version = io.SCHEMA_V2
+
+    def test_direct_construction_needs_no_directory(self) -> None:
+        """A caller holding only a document can still read fields."""
+        held = CoreMetadata(
+            core_path=Path("acquisition.json"),
+            version=io.SCHEMA_V2,
+            core_raw=_v2_acquisition(30.0),
+        )
+        self.assertIsNone(held.input_dir)
+        self.assertEqual(held.get_frame_rate(), 30.0)
+
+
+class TestFrameRate(unittest.TestCase):
+    """Per-version frame-rate readers."""
+
+    def test_v1(self) -> None:
+        """v1 frame rate comes from the first ophys_fov."""
+        self.assertEqual(core._frame_rate_v1(_v1_session(11.0)), 11.0)
+
+    def test_v1_none(self) -> None:
+        """v1 returns None when no FOV declares a frame rate."""
+        self.assertIsNone(core._frame_rate_v1(_v1_session()))
+        self.assertIsNone(core._frame_rate_v1({}))
+
+    def test_v2(self) -> None:
+        """v2 frame rate comes from the imaging config sampling strategy."""
+        self.assertEqual(core._frame_rate_v2(_v2_acquisition(9.5)), 9.5)
+
+    def test_v2_none(self) -> None:
+        """v2 returns None when sampling strategy omits frame rate."""
+        self.assertIsNone(core._frame_rate_v2(_v2_acquisition()))
+
+    def test_v2_ignores_non_imaging_config(self) -> None:
+        """A non-imaging configuration is skipped."""
+        acq = {"data_streams": [{"configurations": [{"object_type": "x"}]}]}
+        self.assertIsNone(core._frame_rate_v2(acq))
+
+    def test_platform(self) -> None:
+        """platform.json frame rate comes from imaging_plane_groups."""
+        platform = {
+            "imaging_plane_groups": [{"acquisition_framerate_Hz": 7.0}]
+        }
+        self.assertEqual(core._frame_rate_platform(platform), 7.0)
+        self.assertIsNone(core._frame_rate_platform({}))
+
+    def test_minimal_coerces(self) -> None:
+        """The key is read and coerced from v1-style strings."""
+        self.assertEqual(
+            core._frame_rate_minimal({"frame_rate": "12.5"}), 12.5
+        )
+
+    def test_minimal_absent(self) -> None:
+        """A document without the key yields None."""
+        self.assertIsNone(core._frame_rate_minimal({}))
+
+
+class TestGetFrameRate(_CoreFileCase):
+    """The one frame-rate method: fallback ladder, override and raise."""
+
+    def test_metadata_wins(self) -> None:
+        """A frame rate in the core file is used as-is."""
+        loaded = self.load(io.V1_CORE_FILE, _v1_session(30.0))
+        self.assertEqual(loaded.get_frame_rate(), 30.0)
+
+    def test_each_version_reads_its_own_layout(self) -> None:
+        """The same method covers all three document shapes."""
+        self.assertEqual(
+            _direct(io.SCHEMA_V1, _v1_session(3.0)).get_frame_rate(), 3.0
+        )
+        self.assertEqual(
+            _direct(io.SCHEMA_V2, _v2_acquisition(4.0)).get_frame_rate(), 4.0
+        )
+        self.assertEqual(
+            _direct(io.SCHEMA_MINIMAL, {"frame_rate": 6.0}).get_frame_rate(),
+            6.0,
+        )
+
+    def test_minimal_through_load(self) -> None:
+        """A real metadata.json on disk dispatches to the minimal reader."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"frame_rate": 6.0})
+        self.assertEqual(loaded.version, io.SCHEMA_MINIMAL)
+        self.assertEqual(loaded.get_frame_rate(), 6.0)
+
+    def test_platform_fallback(self) -> None:
+        """platform.json supplies the rate when the core file omits it."""
+        platform = {"imaging_plane_groups": [{"acquisition_framerate_Hz": 9}]}
+        loaded = _direct(io.SCHEMA_V1, _v1_session(), platform)
+        self.assertEqual(loaded.get_frame_rate(), 9.0)
+
+    def test_platform_fallback_is_version_independent(self) -> None:
+        """The minimal document gets the same fallback."""
+        platform = {
+            "imaging_plane_groups": [{"acquisition_framerate_Hz": 4.0}]
+        }
+        loaded = _direct(io.SCHEMA_MINIMAL, {}, platform)
+        self.assertEqual(loaded.get_frame_rate(), 4.0)
+
+    def test_cli_override_used_when_metadata_silent(self) -> None:
+        """The CLI override fills in and is announced."""
+        loaded = _direct(io.SCHEMA_V1, _v1_session())
+        with self.assertLogs(core.logger, level="WARNING"):
+            rate = loaded.get_frame_rate(cli_override=11.0)
+        self.assertEqual(rate, 11.0)
+
+    def test_cli_override_never_beats_metadata(self) -> None:
+        """The override is a fallback, not an override of a real value."""
+        loaded = _direct(io.SCHEMA_V1, _v1_session(30.0))
+        with self.assertNoLogs(core.logger, level="WARNING"):
+            self.assertEqual(loaded.get_frame_rate(cli_override=11.0), 30.0)
+
+    def test_optional_miss_returns_none(self) -> None:
+        """required=False yields None instead of raising."""
+        loaded = _direct(io.SCHEMA_V1, _v1_session())
+        self.assertIsNone(loaded.get_frame_rate(required=False))
+
+    def test_required_miss_names_files_and_version(self) -> None:
+        """The error names the core file, platform.json and the version."""
+        loaded = _direct(io.SCHEMA_V2, _v2_acquisition())
+        with self.assertRaises(ValueError) as ctx:
+            loaded.get_frame_rate()
+        message = str(ctx.exception)
+        self.assertIn("acquisition.json", message)
+        self.assertIn(io.PLATFORM_FILE, message)
+        self.assertIn(io.SCHEMA_V2, message)
+        self.assertIn("/data", message)
+
+    def test_required_miss_without_an_input_dir_still_readable(self) -> None:
+        """A directory-less object falls back to a generic label."""
+        held = CoreMetadata(
+            core_path=Path("session.json"),
+            version=io.SCHEMA_V1,
+            core_raw=_v1_session(),
+        )
+        with self.assertRaises(ValueError) as ctx:
+            held.get_frame_rate()
+        self.assertIn("the input directory", str(ctx.exception))
 
 
 class TestIdentifiers(_CoreFileCase):
@@ -354,6 +514,25 @@ class TestUnknownVersionRefusedAtConstruction(unittest.TestCase):
                 io.SchemaVersion.MINIMAL,
             },
         )
+
+
+class TestAsFloat(unittest.TestCase):
+    """Safe float coercion over raw metadata values."""
+
+    def test_coerces_numeric_strings(self) -> None:
+        """v1 assets carry numbers as strings."""
+        self.assertEqual(core._as_float("1.5"), 1.5)
+        self.assertEqual(core._as_float(2), 2.0)
+
+    def test_none_is_not_an_error(self) -> None:
+        """An explicit JSON null yields None rather than TypeError."""
+        self.assertIsNone(core._as_float(None))
+
+    def test_uncoercible_warns_and_returns_none(self) -> None:
+        """A non-numeric value is reported and dropped."""
+        with self.assertLogs(core.logger, level="WARNING") as logs:
+            self.assertIsNone(core._as_float("abc"))
+        self.assertIn("abc", logs.output[0])
 
 
 if __name__ == "__main__":
