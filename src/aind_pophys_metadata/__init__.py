@@ -49,6 +49,13 @@ from aind_pophys_metadata.processing import (
     pipeline_name_from_env,
     write_processing_json,
 )
+from aind_pophys_metadata.quality_control import (
+    QUALITY_CONTROL_JSON,
+    build_quality_control,
+    dropdown_metric,
+    pending_qc_status,
+    write_quality_control_json,
+)
 
 __version__ = "0.1.0"
 
@@ -94,4 +101,9 @@ __all__ = [
     "pipeline_code",
     "pipeline_name_from_env",
     "write_processing_json",
+    "QUALITY_CONTROL_JSON",
+    "build_quality_control",
+    "dropdown_metric",
+    "pending_qc_status",
+    "write_quality_control_json",
 ]
