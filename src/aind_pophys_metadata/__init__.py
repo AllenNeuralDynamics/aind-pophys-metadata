@@ -31,6 +31,7 @@ from aind_pophys_metadata.naming import (
 )
 from aind_pophys_metadata.processing import (
     build_code,
+    collect_static_resources,
     library_version,
 )
 
@@ -61,5 +62,6 @@ __all__ = [
     "build_fov_ids",
     "fov_id",
     "build_code",
+    "collect_static_resources",
     "library_version",
 ]
