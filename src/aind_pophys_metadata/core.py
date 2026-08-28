@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from aind_data_schema.components.configs import ImagingConfig, PlanarImage
+from aind_data_schema.components.configs import (
+    ImagingConfig,
+    LaserConfig,
+    PlanarImage,
+)
 from aind_data_schema.components.coordinates import Scale
 
 from aind_pophys_metadata import io
@@ -25,6 +29,7 @@ _V2_IMAGING_CONFIG_TYPE = object_type_value(ImagingConfig)
 # PlanarImageStack describes stack/channel acquisition, not a time-series FOV.
 _V2_FOV_IMAGE_TYPE = object_type_value(PlanarImage)
 _V2_SCALE_TYPE = object_type_value(Scale)
+_V2_LASER_CONFIG_TYPE = object_type_value(LaserConfig)
 
 DEFAULT_LENGTH_UNIT = "micrometer"
 
@@ -596,6 +601,59 @@ def _first_scale_v2(transforms: Any) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
+# Wavelengths
+# ---------------------------------------------------------------------------
+
+
+def _excitation_wavelength_v1(session: dict) -> Optional[float]:
+    """Excitation wavelength from v1 ``data_streams[*].light_sources``.
+
+    Parameters
+    ----------
+    session : dict
+        Raw ``session.json`` dict.
+
+    Returns
+    -------
+    float or None
+        The wavelength in nm, or ``None`` when no light source declares one.
+    """
+    for stream in session.get("data_streams") or []:
+        for source in stream.get("light_sources") or []:
+            wavelength = _as_float(source.get("wavelength"))
+            if wavelength is not None:
+                return wavelength
+    return None
+
+
+def _excitation_wavelength_v2(acquisition: dict) -> Optional[float]:
+    """Excitation wavelength from the first v2 ``LaserConfig`` of a channel.
+
+    Parameters
+    ----------
+    acquisition : dict
+        Raw ``acquisition.json`` dict.
+
+    Returns
+    -------
+    float or None
+        The wavelength in nm, or ``None`` when no light source declares one.
+    """
+    for config in _imaging_configs_v2(acquisition):
+        for channel in config.get("channels") or []:
+            for source in channel.get("light_sources") or []:
+                if source.get("object_type") not in (
+                    None,
+                    _V2_LASER_CONFIG_TYPE,
+                ):
+                    continue
+                wavelength = _as_float(source.get("wavelength"))
+                if wavelength is not None:
+                    return wavelength
+    return None
+
+
+# ---------------------------------------------------------------------------
 # The public surface
 # ---------------------------------------------------------------------------
 
@@ -868,4 +926,60 @@ class CoreMetadata:
         for record in sorted(records, key=lambda r: r["plane_index"]):
             if record["um_per_pixel"] is not None:
                 return record["um_per_pixel"]
+        return None
+
+    def get_excitation_wavelength(self) -> Optional[float]:
+        """Excitation wavelength in nm.
+
+        Returns
+        -------
+        float or None
+            The wavelength, or ``None`` when no light source declares one.
+
+        Raises
+        ------
+        ValueError
+            If this document's schema version is unrecognised.
+        """
+        if self.version is SchemaVersion.V1:
+            return _excitation_wavelength_v1(self.core_raw)
+        if self.version is SchemaVersion.V2:
+            return _excitation_wavelength_v2(self.core_raw)
+        if self.version is SchemaVersion.MINIMAL:
+            return _as_float(self.core_raw.get("excitation_nm"))
+        raise ValueError(
+            f"Unrecognised schema version {self.version!r}; "
+            "cannot read excitation wavelength."
+        )
+
+    def get_emission_wavelength(self) -> Optional[float]:
+        """Emission wavelength in nm.
+
+        v1 has no per-channel emission wavelength, so this is ``None`` for v1
+        input and a caller keeps whatever placeholder it used before.
+
+        Returns
+        -------
+        float or None
+            The wavelength, or ``None`` when unavailable.
+
+        Raises
+        ------
+        ValueError
+            If this document's schema version is unrecognised.
+        """
+        if self.version is SchemaVersion.V1:
+            return None
+        if self.version is SchemaVersion.MINIMAL:
+            return _as_float(self.core_raw.get("emission_nm"))
+        if self.version is not SchemaVersion.V2:
+            raise ValueError(
+                f"Unrecognised schema version {self.version!r}; "
+                "cannot read emission wavelength."
+            )
+        for config in _imaging_configs_v2(self.core_raw):
+            for channel in config.get("channels") or []:
+                wavelength = _as_float(channel.get("emission_wavelength"))
+                if wavelength is not None:
+                    return wavelength
         return None
