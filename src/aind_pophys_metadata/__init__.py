@@ -50,6 +50,7 @@ from aind_pophys_metadata.processing import (
     write_processing_json,
 )
 from aind_pophys_metadata.quality_control import (
+    DEFAULT_GROUPING,
     QUALITY_CONTROL_JSON,
     build_quality_control,
     dropdown_metric,
@@ -68,8 +69,10 @@ from aind_pophys_metadata.runner import (
 __version__ = "0.1.0"
 
 __all__ = [
-    "DEFAULT_LENGTH_UNIT",
+    # core
     "CoreMetadata",
+    "DEFAULT_LENGTH_UNIT",
+    # io
     "DATA_DESCRIPTION_FILE",
     "MINIMAL_CORE_FILE",
     "PLATFORM_FILE",
@@ -77,9 +80,9 @@ __all__ = [
     "SCHEMA_V1",
     "SCHEMA_V2",
     "SUBJECT_FILE",
+    "SchemaVersion",
     "V1_CORE_FILE",
     "V2_CORE_FILE",
-    "SchemaVersion",
     "detect_schema_version",
     "find_core_file",
     "find_one",
@@ -89,8 +92,10 @@ __all__ = [
     "reject_whole_record",
     "relative_to_root",
     "require",
+    # naming
     "build_fov_ids",
     "fov_id",
+    # processing
     "MODEL_SOURCE_ASSET",
     "MODEL_SOURCE_NETWORK",
     "PIPELINE_NAME_ENV",
@@ -104,16 +109,19 @@ __all__ = [
     "collect_static_resources",
     "collect_upstream_process_names",
     "file_sha256",
-    "library_version",
     "model_provenance",
+    "library_version",
     "pipeline_code",
     "pipeline_name_from_env",
     "write_processing_json",
+    # quality_control
+    "DEFAULT_GROUPING",
     "QUALITY_CONTROL_JSON",
     "build_quality_control",
     "dropdown_metric",
     "pending_qc_status",
     "write_quality_control_json",
+    # runner
     "EVENT_TYPE_FIELD",
     "STAGE_COMPLETE",
     "STAGE_ERROR",
