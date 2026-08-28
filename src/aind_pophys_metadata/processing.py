@@ -18,6 +18,8 @@ from aind_data_schema.core.processing import (
 from aind_data_schema_models.process_names import ProcessName
 from aind_data_schema_models.units import MemoryUnit
 
+from aind_pophys_metadata.io import load_json
+
 logger = logging.getLogger(__name__)
 
 PROCESSING_JSON = "processing.json"
@@ -352,6 +354,78 @@ def build_data_process(
     }
     kwargs.update({k: v for k, v in optionals.items() if v is not None})
     return DataProcess(**kwargs)
+
+
+def collect_upstream_process_names(
+    input_dir: Path,
+    *,
+    exclude: Optional[str] = None,
+) -> List[str]:
+    """Collect every upstream ``DataProcess`` name under ``input_dir``.
+
+    All names are collected as flat siblings. No ordering is inferred and no
+    parent is told from a grandparent: the input tree cannot support that
+    distinction. Unreadable documents are skipped with a warning.
+
+    Parameters
+    ----------
+    input_dir : Path
+        Directory searched recursively for ``processing.json`` files.
+    exclude : str, optional
+        This process's own name, dropped from the result so a step can never
+        become its own dependency.
+
+    Returns
+    -------
+    list of str
+        Deduplicated upstream process names in first-seen order.
+    """
+    names: List[str] = []
+    for path in sorted(Path(input_dir).rglob(PROCESSING_JSON)):
+        try:
+            blob = load_json(path)
+            processes = blob.get("data_processes") or []
+            if not isinstance(processes, list):
+                raise ValueError("data_processes must be a list")
+        except (OSError, ValueError, AttributeError) as exc:
+            logger.warning("Skipping unreadable %s: %s", path, exc)
+            continue
+        for process in processes:
+            if not isinstance(process, dict):
+                logger.warning(
+                    "Skipping malformed process in %s: %r", path, process
+                )
+                continue
+            name = process.get("name")
+            if name and name != exclude and name not in names:
+                names.append(name)
+    return names
+
+
+def build_dependency_graph(
+    process_name: str,
+    upstream_names: Optional[List[str]] = None,
+) -> Dict[str, List[str]]:
+    """Build a single-node ``dependency_graph`` for one process.
+
+    ``Processing`` validates the graph's *keys* against its
+    ``data_processes`` names but never its values, which is what lets a
+    per-capsule document name processes living in a different document.
+
+    Parameters
+    ----------
+    process_name : str
+        This process's ``DataProcess.name``.
+    upstream_names : list of str, optional
+        Upstream process names (see
+        :func:`collect_upstream_process_names`).
+
+    Returns
+    -------
+    dict of str to list of str
+        Mapping of ``process_name`` to its upstream names.
+    """
+    return {process_name: list(upstream_names or [])}
 
 
 def build_processing(

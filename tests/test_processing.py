@@ -1,6 +1,7 @@
 """Tests for aind_pophys_metadata.processing."""
 
 import importlib.metadata
+import json
 import os
 import tempfile
 import unittest
@@ -409,6 +410,110 @@ class TestStaticResources(unittest.TestCase):
         ):
             ru = processing.collect_static_resources()
         self.assertIsNone(ru.system_memory_unit)
+
+
+class TestDependencyGraph(unittest.TestCase):
+    """Upstream-name collection and dependency-graph emission."""
+
+    def _write_doc(self, directory: Path, name: str, *names: str) -> None:
+        """Write a minimal processing.json carrying the given names."""
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / processing.PROCESSING_JSON).write_text(
+            json.dumps(
+                {"data_processes": [{"name": n} for n in (name, *names)]}
+            )
+        )
+
+    def test_collects_all_names_as_flat_siblings(self) -> None:
+        """Every name in every document is collected, deduplicated."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_doc(root / "a", "Motion correction", "Shared")
+            self._write_doc(root / "b", "Extraction", "Shared")
+            names = processing.collect_upstream_process_names(root)
+        self.assertEqual(
+            sorted(names), ["Extraction", "Motion correction", "Shared"]
+        )
+
+    def test_excludes_own_name(self) -> None:
+        """A step never becomes its own dependency."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_doc(root / "a", "Mine", "Theirs")
+            names = processing.collect_upstream_process_names(
+                root, exclude="Mine"
+            )
+        self.assertEqual(names, ["Theirs"])
+
+    def test_unreadable_document_is_skipped_with_warning(self) -> None:
+        """Invalid JSON does not cost the run its metadata."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bad").mkdir()
+            (root / "bad" / processing.PROCESSING_JSON).write_text("{oops")
+            self._write_doc(root / "good", "Good")
+            with self.assertLogs(processing.logger, level="WARNING"):
+                names = processing.collect_upstream_process_names(root)
+        self.assertEqual(names, ["Good"])
+
+    def test_non_object_document_is_skipped(self) -> None:
+        """A JSON list where an object was expected is skipped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / processing.PROCESSING_JSON).write_text("[]")
+            with self.assertLogs(processing.logger, level="WARNING"):
+                self.assertEqual(
+                    processing.collect_upstream_process_names(root), []
+                )
+
+    def test_non_list_data_processes_is_skipped(self) -> None:
+        """A mapping where a list was expected is skipped, not iterated."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / processing.PROCESSING_JSON).write_text(
+                json.dumps({"data_processes": {"name": "Motion"}})
+            )
+            with self.assertLogs(processing.logger, level="WARNING"):
+                self.assertEqual(
+                    processing.collect_upstream_process_names(root), []
+                )
+
+    def test_unnamed_process_is_ignored(self) -> None:
+        """A process entry without a name contributes nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / processing.PROCESSING_JSON).write_text(
+                json.dumps({"data_processes": [{}, None]})
+            )
+            self.assertEqual(
+                processing.collect_upstream_process_names(root), []
+            )
+
+    def test_build_dependency_graph(self) -> None:
+        """The graph is a single key mapping to the upstream names."""
+        self.assertEqual(
+            processing.build_dependency_graph("Mine", ["A", "B"]),
+            {"Mine": ["A", "B"]},
+        )
+        self.assertEqual(
+            processing.build_dependency_graph("Mine"), {"Mine": []}
+        )
+
+    def test_build_processing_emits_graph(self) -> None:
+        """build_processing round-trips a dependency graph."""
+        dp = processing.build_data_process(
+            process_type=ProcessName.VIDEO_MOTION_CORRECTION,
+            code=processing.build_code(
+                url=_URL, name="n", library_name=_INSTALLED_LIBRARY
+            ),
+            start_time=_START,
+            end_time=_END,
+            name="Mine",
+        )
+        doc = processing.build_processing(
+            [dp], dependency_graph={"Mine": ["Upstream"]}
+        )
+        self.assertEqual(doc.dependency_graph, {"Mine": ["Upstream"]})
 
 
 if __name__ == "__main__":
