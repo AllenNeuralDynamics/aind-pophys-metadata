@@ -869,20 +869,14 @@ class CoreMetadata:
         Raises
         ------
         ValueError
-            If ``required`` and no source supplies one, or if this document's
-            schema version is unrecognised.
+            If ``required`` and no source supplies one.
         """
         if self.version is SchemaVersion.V1:
             rate = _frame_rate_v1(self.core_raw)
         elif self.version is SchemaVersion.V2:
             rate = _frame_rate_v2(self.core_raw)
-        elif self.version is SchemaVersion.MINIMAL:
-            rate = _frame_rate_minimal(self.core_raw)
         else:
-            raise ValueError(
-                f"Unrecognised schema version {self.version!r}; "
-                "cannot read frame rate."
-            )
+            rate = _frame_rate_minimal(self.core_raw)
         if rate is None and self.platform_raw is not None:
             rate = _frame_rate_platform(self.platform_raw)
         if rate is None and cli_override is not None:
@@ -963,20 +957,14 @@ class CoreMetadata:
         Raises
         ------
         ValueError
-            If this document's schema version is unrecognised, or repeated
-            records for one physical plane conflict.
+            If repeated records for one physical plane conflict.
         """
         if self.version is SchemaVersion.V1:
             records = _plane_records_v1(self.core_raw)
         elif self.version is SchemaVersion.V2:
             records = _plane_records_v2(self.core_raw)
-        elif self.version is SchemaVersion.MINIMAL:
-            records = _plane_records_minimal(self.core_raw)
         else:
-            raise ValueError(
-                f"Unrecognised schema version {self.version!r}; "
-                "cannot read plane records."
-            )
+            records = _plane_records_minimal(self.core_raw)
         return _deduplicate_plane_records(records)
 
     def get_fov_ids(self) -> Tuple[str, ...]:
@@ -989,11 +977,6 @@ class CoreMetadata:
         -------
         tuple of str
             One id per plane; empty when the document lists no planes.
-
-        Raises
-        ------
-        ValueError
-            If this document's schema version is unrecognised.
         """
         return build_fov_ids(_pairs_from_records(self.get_plane_records()))
 
@@ -1010,11 +993,6 @@ class CoreMetadata:
             scale or declares it in a unit that cannot be converted. A caller
             computing with the value should refuse to default rather than
             assume 1.0.
-
-        Raises
-        ------
-        ValueError
-            If this document's schema version is unrecognised.
         """
         records = self.get_plane_records()
         for record in sorted(records, key=lambda r: r["plane_index"]):
@@ -1029,22 +1007,12 @@ class CoreMetadata:
         -------
         float or None
             The wavelength, or ``None`` when no light source declares one.
-
-        Raises
-        ------
-        ValueError
-            If this document's schema version is unrecognised.
         """
         if self.version is SchemaVersion.V1:
             return _excitation_wavelength_v1(self.core_raw)
         if self.version is SchemaVersion.V2:
             return _excitation_wavelength_v2(self.core_raw)
-        if self.version is SchemaVersion.MINIMAL:
-            return _as_float(self.core_raw.get("excitation_nm"))
-        raise ValueError(
-            f"Unrecognised schema version {self.version!r}; "
-            "cannot read excitation wavelength."
-        )
+        return _as_float(self.core_raw.get("excitation_nm"))
 
     def get_emission_wavelength(self) -> Optional[float]:
         """Emission wavelength in nm.
@@ -1056,21 +1024,11 @@ class CoreMetadata:
         -------
         float or None
             The wavelength, or ``None`` when unavailable.
-
-        Raises
-        ------
-        ValueError
-            If this document's schema version is unrecognised.
         """
         if self.version is SchemaVersion.V1:
             return None
         if self.version is SchemaVersion.MINIMAL:
             return _as_float(self.core_raw.get("emission_nm"))
-        if self.version is not SchemaVersion.V2:
-            raise ValueError(
-                f"Unrecognised schema version {self.version!r}; "
-                "cannot read emission wavelength."
-            )
         for config in _imaging_configs_v2(self.core_raw):
             for channel in config.get("channels") or []:
                 wavelength = _as_float(channel.get("emission_wavelength"))
