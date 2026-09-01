@@ -133,6 +133,7 @@ def build_quality_control(metrics: List[QCMetric]) -> QualityControl:
 def write_quality_control_json(
     quality_control: QualityControl,
     output_dir: Path,
+    validate: bool = True,
 ) -> Path:
     """Write ``quality_control.json`` to ``output_dir`` via the schema helper.
 
@@ -146,13 +147,27 @@ def write_quality_control_json(
         Object built by :func:`build_quality_control`.
     output_dir : Path
         Destination directory; created if it does not exist.
+    validate : bool, optional
+        When True (the default), the written file is re-read and validated
+        back through ``QualityControl`` to catch serialize/read asymmetries
+        that construction does not. Leaves no extra artifact; set False to
+        skip the check.
 
     Returns
     -------
     Path
         Path to the written ``quality_control.json``.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If ``validate`` and the written file does not re-validate as a
+        ``QualityControl`` document.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     quality_control.write_standard_file(output_directory=str(output_dir))
-    return output_dir / QUALITY_CONTROL_JSON
+    path = output_dir / QUALITY_CONTROL_JSON
+    if validate:
+        QualityControl.model_validate_json(path.read_text())
+    return path

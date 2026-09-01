@@ -474,7 +474,9 @@ def build_processing(
     )
 
 
-def write_processing_json(processing: Processing, output_dir: Path) -> Path:
+def write_processing_json(
+    processing: Processing, output_dir: Path, validate: bool = True
+) -> Path:
     """Write ``processing.json`` to ``output_dir`` via the schema helper.
 
     Uses ``Processing.write_standard_file`` so the file format matches other
@@ -486,16 +488,30 @@ def write_processing_json(processing: Processing, output_dir: Path) -> Path:
         Object built by :func:`build_processing`.
     output_dir : Path
         Destination directory; created if it does not exist.
+    validate : bool, optional
+        When True (the default), the written file is re-read and validated
+        back through ``Processing`` to catch serialize/read asymmetries that
+        construction does not (a document can build and serialize yet fail to
+        re-validate). Leaves no extra artifact; set False to skip the check.
 
     Returns
     -------
     Path
         Path to the written ``processing.json``.
+
+    Raises
+    ------
+    pydantic.ValidationError
+        If ``validate`` and the written file does not re-validate as a
+        ``Processing`` document.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     processing.write_standard_file(output_directory=str(output_dir))
-    return output_dir / PROCESSING_JSON
+    path = output_dir / PROCESSING_JSON
+    if validate:
+        Processing.model_validate_json(path.read_text())
+    return path
 
 
 def file_sha256(path: Path) -> str:

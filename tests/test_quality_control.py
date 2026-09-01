@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from aind_data_schema.core.quality_control import (
     QCMetric,
@@ -82,6 +83,29 @@ class TestQualityControl(unittest.TestCase):
             out = qc.write_quality_control_json(doc, Path(tmp) / "sub")
             self.assertTrue(out.exists())
             self.assertEqual(out.name, "quality_control.json")
+
+    def test_write_quality_control_json_validates_by_default(self) -> None:
+        """The writer round-trips the written file through QualityControl."""
+        doc = qc.build_quality_control([self._metric()])
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                QualityControl, "model_validate_json"
+            ) as mock_validate:
+                out = qc.write_quality_control_json(doc, Path(tmp))
+            mock_validate.assert_called_once_with(out.read_text())
+
+    def test_write_quality_control_json_skips_validation(self) -> None:
+        """validate=False writes without re-validating."""
+        doc = qc.build_quality_control([self._metric()])
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                QualityControl, "model_validate_json"
+            ) as mock_validate:
+                out = qc.write_quality_control_json(
+                    doc, Path(tmp), validate=False
+                )
+            mock_validate.assert_not_called()
+            self.assertTrue(out.exists())
 
 
 if __name__ == "__main__":

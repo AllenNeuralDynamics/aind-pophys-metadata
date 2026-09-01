@@ -175,6 +175,41 @@ class TestProcessing(unittest.TestCase):
             self.assertTrue(out.exists())
             self.assertEqual(out.name, "processing.json")
 
+    def _doc(self) -> Processing:
+        """Build a minimal processing document for the writer tests."""
+        dp = processing.build_data_process(
+            process_type=ProcessName.VIDEO_MOTION_CORRECTION,
+            code=self._code(),
+            start_time=_START,
+            end_time=_END,
+        )
+        return processing.build_processing([dp])
+
+    def test_write_processing_json_validates_by_default(self) -> None:
+        """The writer round-trips the written file through Processing."""
+        doc = self._doc()
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                Processing, "model_validate_json"
+            ) as mock_validate:
+                out = processing.write_processing_json(doc, Path(tmp))
+            mock_validate.assert_called_once_with(out.read_text())
+
+    def test_write_processing_json_skips_validation_when_disabled(
+        self,
+    ) -> None:
+        """validate=False writes without re-validating."""
+        doc = self._doc()
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(
+                Processing, "model_validate_json"
+            ) as mock_validate:
+                out = processing.write_processing_json(
+                    doc, Path(tmp), validate=False
+                )
+            mock_validate.assert_not_called()
+            self.assertTrue(out.exists())
+
 
 _PIPELINE_ENV = {
     processing.PIPELINE_NAME_ENV: "aind-pophys-pipeline",
