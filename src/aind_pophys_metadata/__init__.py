@@ -47,6 +47,7 @@ from aind_pophys_metadata.processing import (
     model_provenance,
     pipeline_code,
     pipeline_name_from_env,
+    read_upstream_process_parameters,
     write_processing_json,
 )
 from aind_pophys_metadata.quality_control import (
@@ -113,6 +114,7 @@ __all__ = [
     "library_version",
     "pipeline_code",
     "pipeline_name_from_env",
+    "read_upstream_process_parameters",
     "write_processing_json",
     # quality_control
     "DEFAULT_GROUPING",
