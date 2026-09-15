@@ -626,3 +626,113 @@ class TestBuildCodeIdentity(unittest.TestCase):
             processing.build_code(name="n", url=_URL)
         with self.assertRaises(TypeError):
             processing.build_code(name="n", library_name=_INSTALLED_LIBRARY)
+
+
+class TestReadUpstreamProcessParameters(unittest.TestCase):
+    """Reading named settings from a v1 or v2 upstream process document."""
+
+    def _write_v2(self, directory: Path, parameters: dict) -> None:
+        """Write a v2 processing.json with flat code.parameters."""
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / processing.PROCESSING_JSON).write_text(
+            json.dumps(
+                {"data_processes": [{"code": {"parameters": parameters}}]}
+            )
+        )
+
+    def _write_v1(self, directory: Path, parameters: dict) -> None:
+        """Write a v1 <plane>_data_process.json with flat parameters."""
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "plane_0_data_process.json").write_text(
+            json.dumps({"parameters": parameters})
+        )
+
+    def test_reads_flat_v2_parameters(self) -> None:
+        """v2 records settings flat on code.parameters."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_v2(root, {"block_size": [128, 128], "nonrigid": True})
+            found = processing.read_upstream_process_parameters(
+                root, ["block_size", "nonrigid"]
+            )
+        self.assertEqual(found, {"block_size": [128, 128], "nonrigid": True})
+
+    def test_reads_flat_v1_parameters(self) -> None:
+        """A v1 document with flat parameters is read when no v2 exists."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_v1(root, {"nonrigid": False})
+            found = processing.read_upstream_process_parameters(
+                root, ["nonrigid"]
+            )
+        self.assertEqual(found, {"nonrigid": False})
+
+    def test_reads_v1_nested_parameters(self) -> None:
+        """A v1 nesting (suite2p_args) is searched without being named."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_v1(
+                root, {"suite2p_args": {"block_size": [64, 64]}}
+            )
+            found = processing.read_upstream_process_parameters(
+                root, ["block_size"]
+            )
+        self.assertEqual(found, {"block_size": [64, 64]})
+
+    def test_v2_is_preferred_over_v1(self) -> None:
+        """With both present, the v2 document wins."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_v2(root / "a", {"block_size": [128, 128]})
+            self._write_v1(root / "b", {"block_size": [64, 64]})
+            found = processing.read_upstream_process_parameters(
+                root, ["block_size"]
+            )
+        self.assertEqual(found, {"block_size": [128, 128]})
+
+    def test_returns_only_the_keys_found(self) -> None:
+        """A None value and an absent key are both omitted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_v2(root, {"block_size": [128, 128], "nonrigid": None})
+            found = processing.read_upstream_process_parameters(
+                root, ["block_size", "nonrigid", "missing"]
+            )
+        self.assertEqual(found, {"block_size": [128, 128]})
+
+    def test_returns_empty_when_nothing_supplies_a_key(self) -> None:
+        """No document and no key both yield an empty mapping."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_v2(root, {"other": 1})
+            self.assertEqual(
+                processing.read_upstream_process_parameters(
+                    root, ["block_size"]
+                ),
+                {},
+            )
+
+    def test_unreadable_document_is_skipped_with_warning(self) -> None:
+        """Invalid JSON is skipped; a later document still resolves."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bad").mkdir()
+            (root / "bad" / processing.PROCESSING_JSON).write_text("{oops")
+            self._write_v2(root / "good", {"nonrigid": True})
+            with self.assertLogs(processing.logger, level="WARNING"):
+                found = processing.read_upstream_process_parameters(
+                    root, ["nonrigid"]
+                )
+        self.assertEqual(found, {"nonrigid": True})
+
+    def test_non_recursive_ignores_subdirectories(self) -> None:
+        """recursive=False reads only the top level."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_v2(root / "sub", {"block_size": [128, 128]})
+            self.assertEqual(
+                processing.read_upstream_process_parameters(
+                    root, ["block_size"], recursive=False
+                ),
+                {},
+            )

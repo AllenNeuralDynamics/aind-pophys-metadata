@@ -7,7 +7,7 @@ import os
 import platform as platform_mod
 from datetime import datetime as dt
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from aind_data_schema.components.identifiers import Code, DataAsset
 from aind_data_schema.core.processing import (
@@ -24,6 +24,8 @@ from aind_pophys_metadata.io import load_json
 logger = logging.getLogger(__name__)
 
 PROCESSING_JSON = "processing.json"
+#: v1 steps wrote per-process settings to ``<plane>_*_data_process.json``.
+V1_DATA_PROCESS_GLOB = "*data_process.json"
 
 #: Model bytes were already present locally when the loader ran.
 MODEL_SOURCE_ASSET = "code_ocean_data_asset"
@@ -407,6 +409,122 @@ def collect_upstream_process_names(
             if name and name != exclude and name not in names:
                 names.append(name)
     return names
+
+
+def _parameters_from_v2(blob: dict, keys: Tuple[str, ...]) -> Dict[str, Any]:
+    """Extract ``keys`` from a v2 ``processing.json`` blob.
+
+    v2 records each step's settings flat on
+    ``data_processes[*].code.parameters``.
+
+    Parameters
+    ----------
+    blob : dict
+        Parsed ``processing.json`` (an empty dict yields no keys).
+    keys : tuple of str
+        Parameter names to read.
+
+    Returns
+    -------
+    dict
+        The subset of ``keys`` that was found.
+    """
+    found: Dict[str, Any] = {}
+    for process in blob.get("data_processes") or []:
+        parameters = (process.get("code") or {}).get("parameters") or {}
+        for key in keys:
+            if key not in found and parameters.get(key) is not None:
+                found[key] = parameters[key]
+    return found
+
+
+def _parameters_from_v1(blob: dict, keys: Tuple[str, ...]) -> Dict[str, Any]:
+    """Extract ``keys`` from a v1 ``*data_process.json`` blob.
+
+    v1 wrote settings under ``parameters``; some steps nested them one level
+    deeper (motion correction used ``suite2p_args``). Both the flat mapping and
+    any nested dict are searched, so a caller need not name the nesting.
+
+    Parameters
+    ----------
+    blob : dict
+        Parsed ``*data_process.json``.
+    keys : tuple of str
+        Parameter names to read.
+
+    Returns
+    -------
+    dict
+        The subset of ``keys`` that was found.
+    """
+    parameters = blob.get("parameters") or {}
+    sources = [parameters]
+    sources += [v for v in parameters.values() if isinstance(v, dict)]
+    found: Dict[str, Any] = {}
+    for source in sources:
+        for key in keys:
+            if key not in found and source.get(key) is not None:
+                found[key] = source[key]
+    return found
+
+
+def read_upstream_process_parameters(
+    input_dir: Path,
+    keys: Iterable[str],
+    *,
+    recursive: bool = True,
+) -> Dict[str, Any]:
+    """Read named settings from an upstream step's process document.
+
+    Two on-disk shapes are handled so a reader never has to branch on the
+    upstream step's schema version:
+
+    - v2 writes the settings flat on ``data_processes[*].code.parameters`` of a
+      ``processing.json``.
+    - v1 wrote them on a ``*data_process.json`` under ``parameters`` (some
+      steps nested them one level deeper, e.g. suite2p ``suite2p_args``).
+
+    The v2 ``processing.json`` is preferred and the v1 document is a fallback;
+    the first document that supplies any requested key wins. Unreadable
+    documents are skipped with a warning.
+
+    Parameters
+    ----------
+    input_dir : Path
+        Directory searched for the upstream process document.
+    keys : iterable of str
+        Parameter names to read.
+    recursive : bool, optional
+        Search subdirectories too (default). ``rglob`` does not follow symlinks
+        on Python <= 3.12, so resolve symlinked inputs before calling.
+
+    Returns
+    -------
+    dict
+        Each requested key that was found mapped to its value; empty when no
+        document supplies any.
+    """
+    wanted = tuple(keys)
+    for pattern, extract in (
+        (PROCESSING_JSON, _parameters_from_v2),
+        (V1_DATA_PROCESS_GLOB, _parameters_from_v1),
+    ):
+        base = Path(input_dir)
+        paths = base.rglob(pattern) if recursive else base.glob(pattern)
+        for path in sorted(paths):
+            try:
+                found = extract(load_json(path), wanted)
+            except (OSError, ValueError, AttributeError) as exc:
+                logger.warning("Skipping unreadable %s: %s", path, exc)
+                continue
+            if found:
+                logger.info(
+                    "Read upstream parameters %s from %s",
+                    sorted(found),
+                    path.name,
+                )
+                return found
+    return {}
 
 
 def build_dependency_graph(
