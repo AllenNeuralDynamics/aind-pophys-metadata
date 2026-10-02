@@ -17,7 +17,7 @@ readme = "README.md"
 version = "0.1.0"
 
 dependencies = [
-    "aind-data-schema==2.9.0",
+    "aind-data-schema==2.9.1",
     "aind-data-schema-models==6.2.0",
     "aind-qcportal-schema==0.6.4",
     "pytz",
