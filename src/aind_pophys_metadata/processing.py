@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 PROCESSING_JSON = "processing.json"
 
+#: ``[project.urls]`` label naming the repository a ``Code`` url points to.
+REPOSITORY_URL_LABEL = "Repository"
+
 #: Model bytes were already present locally when the loader ran.
 MODEL_SOURCE_ASSET = "code_ocean_data_asset"
 
@@ -193,62 +196,81 @@ def collect_static_resources() -> ResourceUsage:
     )
 
 
-def library_version(library_name: str) -> str:
-    """Return the installed backing library's released version.
-
-    The backing library's version names a released artifact; a capsule
-    wrapper's ``VERSION`` does not. An unresolvable version warns and yields
-    an empty string rather than failing a completed run.
+def _distribution_metadata(package: str) -> importlib.metadata.PackageMetadata:
+    """Return the installed distribution metadata for ``package``.
 
     Parameters
     ----------
-    library_name : str
-        Distribution name of the backing library (e.g.
-        ``"aind-ophys-dff-library"``).
+    package : str
+        A module name inside the package, typically the caller's
+        ``__name__``. Only the top-level package is used, and it resolves to
+        the distribution of the same normalized name.
+
+    Returns
+    -------
+    importlib.metadata.PackageMetadata
+        The distribution's core metadata.
+
+    Raises
+    ------
+    importlib.metadata.PackageNotFoundError
+        If no installed distribution matches the top-level package.
+    """
+    top_level = package.split(".")[0]
+    try:
+        return importlib.metadata.metadata(top_level)
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise importlib.metadata.PackageNotFoundError(
+            f"No installed distribution for package {top_level!r}; install it "
+            "so its Code identity can be read from package metadata."
+        ) from exc
+
+
+def _repository_url(metadata: importlib.metadata.PackageMetadata) -> str:
+    """Return the ``Repository`` entry of a distribution's project urls.
+
+    Parameters
+    ----------
+    metadata : importlib.metadata.PackageMetadata
+        The distribution's core metadata.
 
     Returns
     -------
     str
-        The installed version, or ``""`` when the distribution is not
-        installed.
+        The repository url.
+
+    Raises
+    ------
+    ValueError
+        If the distribution declares no ``Repository`` project url.
     """
-    try:
-        return importlib.metadata.version(library_name)
-    except importlib.metadata.PackageNotFoundError:
-        logger.warning(
-            "Backing library %s is not installed; emitting Code without a "
-            "version. Provenance for this step will not identify the exact "
-            "artifact.",
-            library_name,
-        )
-        return ""
+    for entry in metadata.get_all("Project-URL") or []:
+        label, _, url = entry.partition(",")
+        if label.strip().lower() == REPOSITORY_URL_LABEL.lower():
+            return url.strip()
+    raise ValueError(
+        f"Distribution {metadata['Name']!r} declares no "
+        f"[project.urls] {REPOSITORY_URL_LABEL} entry."
+    )
 
 
 def build_code(
-    name: str,
+    package: str,
     *,
-    library_name: str,
-    url: str,
     parameters: Optional[dict] = None,
     input_data: Optional[List[str]] = None,
     language_version: Optional[str] = None,
 ) -> Code:
     """Construct a v2 ``Code`` block for a process.
 
-    ``version`` is the installed backing library's released version; neither a
-    caller-supplied version nor the capsule's ``VERSION`` env var is consulted.
-    ``url`` is supplied by the caller, since only the consuming repo knows
-    where its own code lives.
+    ``name``, ``version`` and ``url`` are read from the installed
+    distribution that provides ``package``: its name, its version, and the
+    ``Repository`` entry of its project urls.
 
     Parameters
     ----------
-    name : str
-        Human-readable code name.
-    library_name : str
-        Distribution name of the backing library (e.g.
-        ``"aind-ophys-dff-library"``). The sole source of the version.
-    url : str
-        Repository url for the code that ran.
+    package : str
+        A module name inside the calling package, typically ``__name__``.
     parameters : dict, optional
         Run parameters recorded on the code block.
     input_data : list of str, optional
@@ -260,12 +282,19 @@ def build_code(
     -------
     Code
         The populated code block.
+
+    Raises
+    ------
+    importlib.metadata.PackageNotFoundError
+        If ``package`` is not provided by an installed distribution.
+    ValueError
+        If that distribution declares no ``Repository`` project url.
     """
-    version = library_version(library_name)
+    metadata = _distribution_metadata(package)
     return Code(
-        url=url,
-        name=name,
-        version=version,
+        url=_repository_url(metadata),
+        name=metadata["Name"],
+        version=metadata["Version"],
         language="Python",
         language_version=language_version or platform_mod.python_version(),
         parameters=parameters or {},
