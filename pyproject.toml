@@ -23,6 +23,9 @@ dependencies = [
     "pytz",
 ]
 
+[project.urls]
+Repository = "https://github.com/AllenNeuralDynamics/aind-pophys-metadata"
+
 [dependency-groups]
 dev = [
     'black',

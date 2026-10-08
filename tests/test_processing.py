@@ -1,5 +1,6 @@
 """Tests for aind_pophys_metadata.processing."""
 
+import email.message
 import importlib.metadata
 import json
 import os
@@ -22,9 +23,10 @@ from pydantic import ValidationError
 
 from aind_pophys_metadata import processing
 
-# An installed distribution, so the version resolver has something real
-# to find; the library under test is always installed in its own test run.
-_INSTALLED_LIBRARY = "aind-pophys-metadata"
+# The library under test is always installed in its own test run, so its
+# package metadata is the identity build_code reads.
+_PACKAGE = "aind_pophys_metadata"
+_DISTRIBUTION = "aind-pophys-metadata"
 _URL = "https://github.com/AllenNeuralDynamics/aind-pophys-metadata"
 
 _START = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
@@ -36,9 +38,7 @@ class TestProcessing(unittest.TestCase):
 
     def _code(self) -> Code:
         """Build a minimal Code block for reuse."""
-        return processing.build_code(
-            url=_URL, name="Example", library_name=_INSTALLED_LIBRARY
-        )
+        return processing.build_code(_PACKAGE)
 
     def test_static_resources(self) -> None:
         """collect_static_resources reports OS, architecture, cores."""
@@ -56,9 +56,7 @@ class TestProcessing(unittest.TestCase):
     def test_build_code_with_input_data(self) -> None:
         """input_data names are wrapped and language_version is honored."""
         code = processing.build_code(
-            url=_URL,
-            name="n",
-            library_name=_INSTALLED_LIBRARY,
+            _PACKAGE,
             parameters={"a": 1},
             input_data=["asset_a", "asset_b"],
             language_version="3.10.0",
@@ -193,9 +191,7 @@ class TestPipelineIdentity(unittest.TestCase):
 
     def _code(self) -> Code:
         """Build a minimal Code block for reuse."""
-        return processing.build_code(
-            url=_URL, name="Example", library_name=_INSTALLED_LIBRARY
-        )
+        return processing.build_code(_PACKAGE)
 
     def _data_process(self) -> object:
         """Build a data process using the env-derived pipeline default."""
@@ -293,23 +289,6 @@ class TestPipelineIdentity(unittest.TestCase):
             pipeline_name="explicit",
         )
         self.assertEqual(dp.pipeline_name, "explicit")
-
-
-class TestLibraryVersion(unittest.TestCase):
-    """The standalone backing-library version resolver."""
-
-    def test_installed_distribution_resolves(self) -> None:
-        """An installed distribution reports its own version."""
-        self.assertEqual(
-            processing.library_version(_INSTALLED_LIBRARY),
-            importlib.metadata.version(_INSTALLED_LIBRARY),
-        )
-
-    def test_missing_distribution_returns_empty_and_warns(self) -> None:
-        """An absent distribution warns once and yields an empty string."""
-        with self.assertLogs(processing.logger, level="WARNING") as logs:
-            self.assertEqual(processing.library_version("nope-not-real"), "")
-        self.assertEqual(len(logs.output), 1)
 
 
 class TestStaticResources(unittest.TestCase):
@@ -562,9 +541,7 @@ class TestDependencyGraph(unittest.TestCase):
         """build_processing round-trips a dependency graph."""
         dp = processing.build_data_process(
             process_type=ProcessName.VIDEO_MOTION_CORRECTION,
-            code=processing.build_code(
-                url=_URL, name="n", library_name=_INSTALLED_LIBRARY
-            ),
+            code=processing.build_code(_PACKAGE),
             start_time=_START,
             end_time=_END,
             name="Mine",
@@ -580,49 +557,64 @@ if __name__ == "__main__":
 
 
 class TestBuildCodeIdentity(unittest.TestCase):
-    """Where ``Code.url`` and ``Code.version`` come from."""
+    """``Code`` name, version and url come from package metadata."""
 
-    def test_version_comes_from_the_installed_library(self) -> None:
-        """code.version is the backing library's released version."""
-        code = processing.build_code(
-            url=_URL, name="n", library_name=_INSTALLED_LIBRARY
-        )
+    def test_identity_comes_from_the_installed_distribution(self) -> None:
+        """name, version and url all describe the distribution."""
+        code = processing.build_code(_PACKAGE)
+        self.assertEqual(code.name, _DISTRIBUTION)
         self.assertEqual(
-            code.version, importlib.metadata.version(_INSTALLED_LIBRARY)
+            code.version, importlib.metadata.version(_DISTRIBUTION)
         )
+        self.assertEqual(code.url, _URL)
 
-    def test_url_is_whatever_the_caller_supplied(self) -> None:
-        """Only the consuming repo knows where its own code lives."""
-        code = processing.build_code(
-            url="https://example.invalid/some-repo",
-            name="n",
-            library_name=_INSTALLED_LIBRARY,
+    def test_any_module_of_the_package_resolves_the_same(self) -> None:
+        """A submodule ``__name__`` resolves its top-level distribution."""
+        self.assertEqual(
+            processing.build_code(processing.__name__),
+            processing.build_code(_PACKAGE),
         )
-        self.assertEqual(code.url, "https://example.invalid/some-repo")
 
     def test_version_environment_variable_is_ignored(self) -> None:
-        """A capsule wrapper's VERSION never reaches the document."""
+        """A wrapper's VERSION never reaches the document."""
         with patch.dict(os.environ, {"VERSION": "9.9.9"}):
-            code = processing.build_code(
-                url=_URL, name="n", library_name=_INSTALLED_LIBRARY
-            )
+            code = processing.build_code(_PACKAGE)
         self.assertNotEqual(code.version, "9.9.9")
 
-    def test_missing_package_warns_and_never_raises(self) -> None:
-        """An uninstalled library yields an empty version, not an error."""
-        with self.assertLogs(processing.logger, level="WARNING") as logs:
-            code = processing.build_code(
-                url=_URL, name="n", library_name="not-a-real-distribution"
-            )
-        self.assertEqual(code.version, "")
-        self.assertEqual(code.url, _URL)
-        self.assertTrue(
-            any("not-a-real-distribution" in m for m in logs.output)
-        )
+    def test_uninstalled_package_raises_naming_it(self) -> None:
+        """A package with no installed distribution fails loudly."""
+        with self.assertRaises(importlib.metadata.PackageNotFoundError) as cm:
+            processing.build_code("not_a_real_package.module")
+        self.assertIn("not_a_real_package", str(cm.exception))
 
-    def test_library_name_and_url_are_required(self) -> None:
-        """Neither can be defaulted; both identify the code that ran."""
-        with self.assertRaises(TypeError):
-            processing.build_code(name="n", url=_URL)
-        with self.assertRaises(TypeError):
-            processing.build_code(name="n", library_name=_INSTALLED_LIBRARY)
+    def test_repository_url_is_matched_by_label(self) -> None:
+        """Only the Repository entry is used, case-insensitively."""
+        metadata = _metadata(
+            "Homepage, https://example.invalid/home",
+            "repository, https://example.invalid/repo",
+        )
+        with patch.object(
+            processing.importlib.metadata, "metadata", return_value=metadata
+        ):
+            code = processing.build_code(_PACKAGE)
+        self.assertEqual(code.url, "https://example.invalid/repo")
+
+    def test_missing_repository_url_raises(self) -> None:
+        """A distribution without a Repository url cannot identify code."""
+        metadata = _metadata("Homepage, https://example.invalid/home")
+        with patch.object(
+            processing.importlib.metadata, "metadata", return_value=metadata
+        ):
+            with self.assertRaises(ValueError) as cm:
+                processing.build_code(_PACKAGE)
+        self.assertIn("example-dist", str(cm.exception))
+
+
+def _metadata(*project_urls: str) -> email.message.Message:
+    """Build distribution metadata with the given ``Project-URL`` entries."""
+    metadata = email.message.Message()
+    metadata["Name"] = "example-dist"
+    metadata["Version"] = "1.2.3"
+    for entry in project_urls:
+        metadata["Project-URL"] = entry
+    return metadata
