@@ -45,26 +45,30 @@ DATA_DESCRIPTION_FILE = "data_description.json"
 
 
 def search(directory: Path, pattern: str) -> List[Path]:
-    """Return every path under ``directory`` whose name matches ``pattern``.
+    """Return every path under ``directory`` that matches ``pattern``.
 
-    Unlike ``Path.rglob``, this descends into symlinked directories, because
-    workflow engines such as Nextflow stage task inputs as symlinks. Each
-    real directory is visited once, so a symlink cycle cannot recurse
-    forever.
+    Matches what ``Path.rglob`` returns on a tree without symlinks, but also
+    descends into symlinked directories, because workflow engines such as
+    Nextflow stage task inputs as symlinks. Each real directory is visited
+    once, so a symlink cycle cannot recurse forever.
 
     Parameters
     ----------
     directory : pathlib.Path
         Directory to search; it is not itself a candidate match.
     pattern : str
-        Case-sensitive ``fnmatch`` pattern matched against each file and
-        directory name.
+        Case-sensitive ``fnmatch`` pattern. Like ``rglob``, each
+        ``/``-separated part matches one trailing path component, and a
+        trailing ``/`` matches directories only.
 
     Returns
     -------
     list of pathlib.Path
         Matching paths under ``directory``, sorted.
     """
+    directory = Path(directory)
+    parts = [part for part in pattern.split("/") if part]
+    directories_only = pattern.endswith("/")
     matches: List[Path] = []
     visited = set()
     for root, dirnames, filenames in os.walk(directory, followlinks=True):
@@ -73,11 +77,15 @@ def search(directory: Path, pattern: str) -> List[Path]:
             dirnames[:] = []
             continue
         visited.add(real)
-        matches.extend(
-            Path(root) / name
-            for name in dirnames + filenames
-            if fnmatch.fnmatchcase(name, pattern)
-        )
+        names = dirnames if directories_only else dirnames + filenames
+        for name in names:
+            path = Path(root) / name
+            tail = path.relative_to(directory).parts[-len(parts):]
+            if len(tail) == len(parts) and all(
+                fnmatch.fnmatchcase(component, part)
+                for component, part in zip(tail, parts)
+            ):
+                matches.append(path)
     return sorted(matches)
 
 

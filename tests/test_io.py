@@ -289,6 +289,34 @@ class TestStagedSymlinks(unittest.TestCase):
         found = io.search(self.root, "x.json")
         self.assertEqual(found, [self.root / "plane" / "x.json"])
 
+    def test_search_matches_rglob_without_symlinks(self) -> None:
+        """On a plain tree, search returns exactly what rglob returns."""
+        (self.real / "extraction").mkdir()
+        (self.real / "extraction" / "x_extraction.h5").touch()
+        (self.real / "pophys").mkdir()
+        (self.real / "Pophys.txt").touch()
+        for pattern in (
+            "*/extraction",
+            "extraction",
+            "pophys/",
+            "*/pophys",
+            "plane/extraction/*.h5",
+            "plane/*",
+            "*.h5",
+            "missing",
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(
+                    io.search(self.real.parent, pattern),
+                    sorted(self.real.parent.rglob(pattern)),
+                )
+
+    def test_search_matches_multipart_pattern_behind_symlink(self) -> None:
+        """A pattern with a separator still reaches behind a symlink."""
+        (self.real / "extraction").mkdir()
+        found = io.search(self.root, "*/extraction")
+        self.assertEqual(found, [self.root / "plane" / "extraction"])
+
     def test_find_one_follows_symlinked_directory(self) -> None:
         """find_one reaches a file behind a directory symlink."""
         (self.real / "movie_registered.h5").touch()
