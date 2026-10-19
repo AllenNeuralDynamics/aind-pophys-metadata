@@ -1,9 +1,11 @@
 """Filesystem, JSON and path helpers, and schema-version detection."""
 
+import fnmatch
 import json
+import os
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 
 class SchemaVersion(str, Enum):
@@ -42,6 +44,43 @@ SUBJECT_FILE = "subject.json"
 DATA_DESCRIPTION_FILE = "data_description.json"
 
 
+def search(directory: Path, pattern: str) -> List[Path]:
+    """Return every path under ``directory`` whose name matches ``pattern``.
+
+    Unlike ``Path.rglob``, this descends into symlinked directories, because
+    workflow engines such as Nextflow stage task inputs as symlinks. Each
+    real directory is visited once, so a symlink cycle cannot recurse
+    forever.
+
+    Parameters
+    ----------
+    directory : pathlib.Path
+        Directory to search; it is not itself a candidate match.
+    pattern : str
+        Case-sensitive ``fnmatch`` pattern matched against each file and
+        directory name.
+
+    Returns
+    -------
+    list of pathlib.Path
+        Matching paths under ``directory``, sorted.
+    """
+    matches: List[Path] = []
+    visited = set()
+    for root, dirnames, filenames in os.walk(directory, followlinks=True):
+        real = os.path.realpath(root)
+        if real in visited:
+            dirnames[:] = []
+            continue
+        visited.add(real)
+        matches.extend(
+            Path(root) / name
+            for name in dirnames + filenames
+            if fnmatch.fnmatchcase(name, pattern)
+        )
+    return sorted(matches)
+
+
 def find_one(
     directory: Path,
     pattern: str,
@@ -63,9 +102,8 @@ def find_one(
     pattern : str
         Glob pattern to match.
     recursive : bool, optional
-        Search subdirectories too. Note ``rglob`` does not follow symlinks on
-        Python <= 3.12, so pass ``False`` and glob the exact directory when
-        the target sits behind one.
+        Search subdirectories too, following symlinked directories (see
+        ``search``).
     required : bool, optional
         Raise when nothing matches instead of returning ``None``.
 
@@ -86,7 +124,7 @@ def find_one(
     """
     directory = Path(directory)
     matches = (
-        directory.rglob(pattern) if recursive else directory.glob(pattern)
+        search(directory, pattern) if recursive else directory.glob(pattern)
     )
     match = next(iter(sorted(matches)), None)
     if match is None and required:
@@ -204,8 +242,8 @@ def find_core_file(input_dir: Path) -> Path:
         If none of the three core files is present.
     """
     input_dir = Path(input_dir)
-    acq_matches = sorted(input_dir.rglob(V2_CORE_FILE))
-    session_matches = sorted(input_dir.rglob(V1_CORE_FILE))
+    acq_matches = search(input_dir, V2_CORE_FILE)
+    session_matches = search(input_dir, V1_CORE_FILE)
     schema_matches = acq_matches + session_matches
     if len(schema_matches) > 1:
         raise ValueError(
@@ -215,7 +253,7 @@ def find_core_file(input_dir: Path) -> Path:
         )
     if schema_matches:
         return schema_matches[0]
-    minimal_matches = sorted(input_dir.rglob(MINIMAL_CORE_FILE))
+    minimal_matches = search(input_dir, MINIMAL_CORE_FILE)
     if len(minimal_matches) > 1:
         raise ValueError(
             f"Ambiguous input: found multiple {MINIMAL_CORE_FILE} files "

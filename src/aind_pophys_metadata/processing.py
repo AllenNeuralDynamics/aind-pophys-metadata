@@ -19,7 +19,7 @@ from aind_data_schema.core.processing import (
 from aind_data_schema_models.process_names import ProcessName
 from aind_data_schema_models.units import MemoryUnit
 
-from aind_pophys_metadata.io import load_json
+from aind_pophys_metadata.io import load_json, search
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +417,7 @@ def collect_upstream_process_names(
         Deduplicated upstream process names in first-seen order.
     """
     names: List[str] = []
-    for path in sorted(Path(input_dir).rglob(PROCESSING_JSON)):
+    for path in search(Path(input_dir), PROCESSING_JSON):
         try:
             blob = load_json(path)
             processes = blob.get("data_processes") or []

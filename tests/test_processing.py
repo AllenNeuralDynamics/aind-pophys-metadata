@@ -473,6 +473,19 @@ class TestDependencyGraph(unittest.TestCase):
             sorted(names), ["Extraction", "Motion correction", "Shared"]
         )
 
+    def test_follows_symlinked_upstream_directory(self) -> None:
+        """A processing.json behind a staged directory symlink is found."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            self._write_doc(base / "work" / "plane", "Motion correction")
+            root = base / "task"
+            root.mkdir()
+            (root / "plane").symlink_to(
+                base / "work" / "plane", target_is_directory=True
+            )
+            names = processing.collect_upstream_process_names(root)
+        self.assertEqual(names, ["Motion correction"])
+
     def test_excludes_own_name(self) -> None:
         """A step never becomes its own dependency."""
         with tempfile.TemporaryDirectory() as tmp:

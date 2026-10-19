@@ -24,6 +24,7 @@ from aind_pophys_metadata.io import (
     reject_whole_record,
     relative_to_root,
     require,
+    search,
 )
 from aind_pophys_metadata.naming import (
     build_fov_ids,
@@ -91,6 +92,7 @@ __all__ = [
     "reject_whole_record",
     "relative_to_root",
     "require",
+    "search",
     # naming
     "build_fov_ids",
     "fov_id",
