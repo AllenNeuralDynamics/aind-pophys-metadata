@@ -124,7 +124,8 @@ from aind_pophys_metadata import (
     stage_guard,
 )
 
-code = build_code(name="dF/F estimation", library_name="my-backing-library")
+# name, version and url come from the installed package that owns __name__.
+code = build_code(__name__)
 # stage_guard ensures a processing.json is always emitted, even on errors.
 with stage_guard(
     output_dir, ProcessName.DF_F_ESTIMATION, code, plane_id="VISp_0"

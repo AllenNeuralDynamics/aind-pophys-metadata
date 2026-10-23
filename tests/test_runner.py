@@ -14,15 +14,12 @@ from aind_data_schema_models.process_names import ProcessName
 
 from aind_pophys_metadata import processing, runner
 
-_INSTALLED_LIBRARY = "aind-pophys-metadata"
-_URL = "https://github.com/AllenNeuralDynamics/aind-pophys-metadata"
+_PACKAGE = "aind_pophys_metadata"
 
 
 def _code() -> Code:
     """Build a minimal Code block for reuse."""
-    return processing.build_code(
-        url=_URL, name="Example", library_name=_INSTALLED_LIBRARY
-    )
+    return processing.build_code(_PACKAGE)
 
 
 def _load(output_dir: Path) -> dict:
@@ -149,8 +146,10 @@ class TestStageGuard(unittest.TestCase):
         """Explicit pipeline metadata can be supplied without env vars."""
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
-            pipeline = processing.build_code(
-                url=_URL, name="explicit", library_name=_INSTALLED_LIBRARY
+            pipeline = Code(
+                url="https://example.invalid/pipeline",
+                name="explicit",
+                version="1.0.0",
             )
             with runner.stage_guard(
                 out,
@@ -208,9 +207,7 @@ class TestMidRunInputData(unittest.TestCase):
     def test_up_front_and_mid_run_input_data_compose(self) -> None:
         """build_code names are kept and mid-run names append, deduped."""
         code = processing.build_code(
-            url=_URL,
-            name="Example",
-            library_name=_INSTALLED_LIBRARY,
+            _PACKAGE,
             input_data=["raw.h5"],
         )
         with tempfile.TemporaryDirectory() as tmp:
@@ -245,9 +242,7 @@ class TestMidRunParameters(unittest.TestCase):
     def test_mid_run_parameters_override_configured_ones(self) -> None:
         """A key set both up front and mid-run keeps the resolved value."""
         code = processing.build_code(
-            url=_URL,
-            name="Example",
-            library_name=_INSTALLED_LIBRARY,
+            _PACKAGE,
             parameters={"diameter": None, "batch_size": 500},
         )
         with tempfile.TemporaryDirectory() as tmp:
