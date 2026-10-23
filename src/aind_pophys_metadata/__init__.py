@@ -24,6 +24,7 @@ from aind_pophys_metadata.io import (
     reject_whole_record,
     relative_to_root,
     require,
+    search,
 )
 from aind_pophys_metadata.naming import (
     build_fov_ids,
@@ -43,7 +44,6 @@ from aind_pophys_metadata.processing import (
     collect_static_resources,
     collect_upstream_process_names,
     file_sha256,
-    library_version,
     model_provenance,
     pipeline_code,
     pipeline_name_from_env,
@@ -92,6 +92,7 @@ __all__ = [
     "reject_whole_record",
     "relative_to_root",
     "require",
+    "search",
     # naming
     "build_fov_ids",
     "fov_id",
@@ -110,7 +111,6 @@ __all__ = [
     "collect_upstream_process_names",
     "file_sha256",
     "model_provenance",
-    "library_version",
     "pipeline_code",
     "pipeline_name_from_env",
     "write_processing_json",

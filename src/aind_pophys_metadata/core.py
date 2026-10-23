@@ -399,7 +399,7 @@ def _deduplicate_plane_records(
 
 # Plane records are plain dicts, so a new per-plane field is additive.
 # Keys: plane_index, structure, depth, depth_unit, coupled_plane_index,
-# scale_factor, scale_factor_unit, um_per_pixel, width, height.
+# channel_name, scale_factor, scale_factor_unit, um_per_pixel, width, height.
 
 
 def _plane_records_v1(session: dict) -> List[Dict[str, Any]]:
@@ -439,6 +439,7 @@ def _plane_records_v1(session: dict) -> List[Dict[str, Any]]:
                     "coupled_plane_index": _as_int(
                         fov.get("coupled_fov_index")
                     ),
+                    "channel_name": None,
                     "scale_factor": scale_factor,
                     "scale_factor_unit": unit,
                     "um_per_pixel": _to_micrometers(scale_factor, unit),
@@ -493,6 +494,7 @@ def _plane_records_v2(acquisition: dict) -> List[Dict[str, Any]]:
                         "coupled_plane_index": _as_int(
                             plane.get("coupled_plane_index")
                         ),
+                        "channel_name": image.get("channel_name"),
                         "scale_factor": scale_factor,
                         "scale_factor_unit": unit,
                         "um_per_pixel": _to_micrometers(scale_factor, unit),
@@ -541,6 +543,7 @@ def _plane_records_minimal(blob: dict) -> List[Dict[str, Any]]:
                 "coupled_plane_index": _as_int(
                     plane.get("coupled_plane_index")
                 ),
+                "channel_name": plane.get("channel_name"),
                 "scale_factor": um_per_pixel,
                 "scale_factor_unit": DEFAULT_LENGTH_UNIT,
                 "um_per_pixel": um_per_pixel,
@@ -949,8 +952,9 @@ class CoreMetadata:
         list of dict
             Unsorted unique records, keyed ``plane_index``, ``structure``,
             ``depth``, ``depth_unit``, ``coupled_plane_index``,
-            ``scale_factor``, ``scale_factor_unit``, ``um_per_pixel``,
-            ``width``, ``height``.
+            ``channel_name``, ``scale_factor``, ``scale_factor_unit``,
+            ``um_per_pixel``, ``width``, ``height``. ``channel_name`` is the
+            imaging channel of the plane's image; v1 sessions record none.
             Pair them with canonical ids by sorting on ``plane_index`` and
             zipping against :meth:`get_fov_ids`.
 

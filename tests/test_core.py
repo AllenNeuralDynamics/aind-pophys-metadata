@@ -929,6 +929,7 @@ class TestPlaneRecordsV1(unittest.TestCase):
                 "depth": 150.0,
                 "depth_unit": "micrometer",
                 "coupled_plane_index": 3,
+                "channel_name": None,
                 "scale_factor": 0.78,
                 "scale_factor_unit": "um/pixel",
                 "um_per_pixel": 0.78,
@@ -1068,6 +1069,16 @@ class TestPlaneRecordsV2(unittest.TestCase):
         (record,) = core._plane_records_v2(acq)
         self.assertEqual(record["depth_unit"], core.DEFAULT_LENGTH_UNIT)
 
+    def test_channel_name_comes_from_the_image(self) -> None:
+        """Each plane carries its image's channel, or None without one."""
+        named = _planar_image([{"plane_index": 0}])
+        named["channel_name"] = "Channel2"
+        acq = _v2_from_images([named, _planar_image([{"plane_index": 1}])])
+        records = core._plane_records_v2(acq)
+        self.assertEqual(
+            [r["channel_name"] for r in records], ["Channel2", None]
+        )
+
 
 class TestPlaneRecordsMinimal(_CoreFileCase):
     """Rich per-plane records from a minimal document."""
@@ -1119,6 +1130,13 @@ class TestPlaneRecordsMinimal(_CoreFileCase):
         )
         self.assertEqual(record["depth_unit"], "mm")
 
+    def test_channel_name_is_copied(self) -> None:
+        """A minimal plane may name its imaging channel."""
+        (record,) = core._plane_records_minimal(
+            {"planes": [{"channel_name": "Channel1"}]}
+        )
+        self.assertEqual(record["channel_name"], "Channel1")
+
 
 class TestGetPlaneRecords(_CoreFileCase):
     """The plane-records method over all three document shapes."""
@@ -1150,6 +1168,7 @@ class TestGetPlaneRecords(_CoreFileCase):
             "depth": 150.0,
             "depth_unit": "micrometer",
             "coupled_plane_index": 1,
+            "channel_name": None,
             "scale_factor": 0.8,
             "scale_factor_unit": "micrometer",
             "um_per_pixel": 0.8,

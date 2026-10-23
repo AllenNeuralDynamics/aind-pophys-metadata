@@ -252,6 +252,83 @@ class TestFindOne(unittest.TestCase):
         self.assertIn(tmp, message)
 
 
+class TestStagedSymlinks(unittest.TestCase):
+    """Searches descend into symlinked directories, as workflows stage them."""
+
+    def setUp(self) -> None:
+        """Stage ``root/plane`` as a symlink to a directory outside root."""
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.real = base / "work" / "plane"
+        self.real.mkdir(parents=True)
+        self.root = base / "task"
+        self.root.mkdir()
+        (self.root / "plane").symlink_to(self.real, target_is_directory=True)
+
+    def tearDown(self) -> None:
+        """Clean up the temp directory."""
+        self._tmp.cleanup()
+
+    def test_search_follows_symlinked_directory(self) -> None:
+        """search finds a file that sits behind a directory symlink."""
+        (self.real / "movie_registered.h5").touch()
+        found = io.search(self.root, "*registered.h5")
+        self.assertEqual(found, [self.root / "plane" / "movie_registered.h5"])
+
+    def test_search_matches_directories_and_sorts(self) -> None:
+        """Matching directories are returned, in sorted order."""
+        (self.real / "b.h5").touch()
+        (self.real / "a.h5").mkdir()
+        found = io.search(self.root, "*.h5")
+        self.assertEqual([path.name for path in found], ["a.h5", "b.h5"])
+
+    def test_search_visits_each_real_directory_once(self) -> None:
+        """A symlink back to an ancestor cannot recurse forever."""
+        (self.real / "loop").symlink_to(self.root, target_is_directory=True)
+        (self.real / "x.json").touch()
+        found = io.search(self.root, "x.json")
+        self.assertEqual(found, [self.root / "plane" / "x.json"])
+
+    def test_search_matches_rglob_without_symlinks(self) -> None:
+        """On a plain tree, search returns exactly what rglob returns."""
+        (self.real / "extraction").mkdir()
+        (self.real / "extraction" / "x_extraction.h5").touch()
+        (self.real / "pophys").mkdir()
+        (self.real / "Pophys.txt").touch()
+        for pattern in (
+            "*/extraction",
+            "extraction",
+            "pophys/",
+            "*/pophys",
+            "plane/extraction/*.h5",
+            "plane/*",
+            "*.h5",
+            "missing",
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(
+                    io.search(self.real.parent, pattern),
+                    sorted(self.real.parent.rglob(pattern)),
+                )
+
+    def test_search_matches_multipart_pattern_behind_symlink(self) -> None:
+        """A pattern with a separator still reaches behind a symlink."""
+        (self.real / "extraction").mkdir()
+        found = io.search(self.root, "*/extraction")
+        self.assertEqual(found, [self.root / "plane" / "extraction"])
+
+    def test_find_one_follows_symlinked_directory(self) -> None:
+        """find_one reaches a file behind a directory symlink."""
+        (self.real / "movie_registered.h5").touch()
+        found = io.find_one(self.root, "*registered.h5")
+        self.assertEqual(found.name, "movie_registered.h5")
+
+    def test_find_core_file_follows_symlinked_directory(self) -> None:
+        """find_core_file reaches a session.json behind a directory symlink."""
+        (self.real / io.V1_CORE_FILE).write_text("{}")
+        self.assertEqual(io.find_core_file(self.root).name, io.V1_CORE_FILE)
+
+
 class TestRelativeToRoot(unittest.TestCase):
     """Provenance path rendering."""
 
