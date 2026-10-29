@@ -468,7 +468,7 @@ def _plane_records_v2(acquisition: dict) -> List[Dict[str, Any]]:
     """
     records: List[Dict[str, Any]] = []
     for config in _imaging_configs_v2(acquisition):
-        axis_unit = (config.get("coordinate_system") or {}).get("axis_unit")
+        axis_unit = _axis_unit_v2(acquisition, config)
         for image in config.get("images") or []:
             if image.get("object_type") != _V2_FOV_IMAGE_TYPE:
                 continue
@@ -578,6 +578,37 @@ def _imaging_configs_v2(acquisition: dict) -> List[dict]:
             if config.get("object_type") == _V2_IMAGING_CONFIG_TYPE:
                 configs.append(config)
     return configs
+
+
+def _axis_unit_v2(acquisition: dict, config: dict) -> Optional[str]:
+    """Axis unit of the coordinate system an imaging config's images use.
+
+    The imaging config's own coordinate system applies when it declares one;
+    otherwise the acquisition's does.
+
+    Parameters
+    ----------
+    acquisition : dict
+        Raw ``acquisition.json`` dict.
+    config : dict
+        One of its ``ImagingConfig`` dicts.
+
+    Returns
+    -------
+    str or None
+        The first declared ``axis_unit``, or ``None`` when no coordinate
+        system declares one.
+    """
+    for system in (
+        config.get("local_coordinate_system"),
+        config.get("coordinate_system"),
+        acquisition.get("global_coordinate_system"),
+        acquisition.get("coordinate_system"),
+    ):
+        unit = (system or {}).get("axis_unit")
+        if unit:
+            return unit
+    return None
 
 
 def _first_scale_v2(transforms: Any) -> Optional[float]:
@@ -955,6 +986,9 @@ class CoreMetadata:
             ``channel_name``, ``scale_factor``, ``scale_factor_unit``,
             ``um_per_pixel``, ``width``, ``height``. ``channel_name`` is the
             imaging channel of the plane's image; v1 sessions record none.
+            ``coupled_plane_index`` is passed through as recorded: the
+            coupled pair's index in v1, the partner plane's
+            ``plane_index`` in v2.
             Pair them with canonical ids by sorting on ``plane_index`` and
             zipping against :meth:`get_fov_ids`.
 
