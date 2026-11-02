@@ -1012,6 +1012,47 @@ class TestPlaneRecordsV2(unittest.TestCase):
         self.assertEqual(record["scale_factor_unit"], "millimeter")
         self.assertEqual(record["um_per_pixel"], 2.0)
 
+    def test_acquisition_coordinate_system_supplies_the_unit(self) -> None:
+        """A scale in the acquisition's millimetre system is not pixels.
+
+        Mesoscope acquisitions declare no coordinate system on the imaging
+        config, so the acquisition's applies; ``dimensions_unit`` is the unit
+        of the pixel dimensions and must not be read as the scale's unit.
+        """
+        for key in ("global_coordinate_system", "coordinate_system"):
+            with self.subTest(key=key):
+                acq = _v2_from_images(
+                    [
+                        _planar_image(
+                            [{"plane_index": 0}],
+                            dimensions=[512, 512],
+                            transform=[_scale_transform(0.00078, 0.00078)],
+                            dimensions_unit="pixel",
+                        )
+                    ]
+                )
+                acq[key] = {"axis_unit": "millimeter"}
+                (record,) = core._plane_records_v2(acq)
+                self.assertEqual(record["scale_factor_unit"], "millimeter")
+                self.assertAlmostEqual(record["um_per_pixel"], 0.78)
+
+    def test_imaging_config_system_wins_over_acquisition(self) -> None:
+        """The config's local coordinate system overrides the global one."""
+        acq = _v2_from_images(
+            [
+                _planar_image(
+                    [{"plane_index": 0}], transform=[_scale_transform(0.5)]
+                )
+            ]
+        )
+        acq["data_streams"][0]["configurations"][0][
+            "local_coordinate_system"
+        ] = {"axis_unit": "micrometer"}
+        acq["global_coordinate_system"] = {"axis_unit": "millimeter"}
+        (record,) = core._plane_records_v2(acq)
+        self.assertEqual(record["scale_factor_unit"], "micrometer")
+        self.assertEqual(record["um_per_pixel"], 0.5)
+
     def test_dimensions_unit_used_when_no_coordinate_system(self) -> None:
         """The image's own unit is the fallback, then micrometres."""
         acq = _v2_from_images(
