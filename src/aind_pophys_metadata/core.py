@@ -782,6 +782,83 @@ def _epoch_records(core_raw: dict) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Session and subject fields
+# ---------------------------------------------------------------------------
+
+#: Fields an NWB file cannot be written without.
+NWB_REQUIRED_FIELDS = ("frame_rate", "session_start_time", "planes")
+#: Fields an NWB file records when present and omits otherwise.
+NWB_OPTIONAL_FIELDS = (
+    "subject_id",
+    "dataset_name",
+    "institution",
+    "sex",
+    "species",
+    "date_of_birth",
+    "genotype",
+)
+_SUBJECT_DETAIL_KEYS = ("sex", "species", "date_of_birth", "genotype")
+
+
+def _name_of(value: Any) -> Optional[str]:
+    """Return a value's name, whether it is a bare string or a named dict.
+
+    Parameters
+    ----------
+    value : Any
+        A string, a dict with a ``name`` key, or ``None``.
+
+    Returns
+    -------
+    str or None
+        The name, or ``None`` when absent.
+    """
+    if isinstance(value, dict):
+        value = value.get("name")
+    return None if value is None else str(value)
+
+
+def _subject_details(node: Optional[dict]) -> Dict[str, Optional[str]]:
+    """Read the subject detail fields from one dict.
+
+    Parameters
+    ----------
+    node : dict or None
+        The dict holding ``sex``, ``species``, ``date_of_birth`` and
+        ``genotype``: a v1 ``subject.json``, the ``subject_details`` of a v2
+        one, or the ``subject`` block of a minimal document.
+
+    Returns
+    -------
+    dict
+        One entry per key in ``_SUBJECT_DETAIL_KEYS``; ``None`` when absent.
+    """
+    node = node or {}
+    return {key: _name_of(node.get(key)) for key in _SUBJECT_DETAIL_KEYS}
+
+
+@dataclass(frozen=True)
+class NwbRequirements:
+    """Which NWB fields an input document is missing.
+
+    Attributes
+    ----------
+    missing_required : tuple of str
+        Entries of ``NWB_REQUIRED_FIELDS`` the document does not supply.
+    missing_optional : tuple of str
+        Entries of ``NWB_OPTIONAL_FIELDS`` the document does not supply.
+    """
+
+    missing_required: Tuple[str, ...]
+    missing_optional: Tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        """Return whether every required field is present."""
+        return not self.missing_required
+
+
+# ---------------------------------------------------------------------------
 # The public surface
 # ---------------------------------------------------------------------------
 
@@ -1087,3 +1164,91 @@ class CoreMetadata:
             ``tiff_stem`` and ``modalities``.
         """
         return _epoch_records(self.core_raw)
+
+    def get_session_start_time(self) -> Optional[str]:
+        """Session start time as recorded, an ISO 8601 string.
+
+        A minimal document without ``session_start_time`` uses the start time
+        of its first epoch.
+
+        Returns
+        -------
+        str or None
+            The start time, or ``None`` when no source provides one.
+        """
+        if self.version is SchemaVersion.V1:
+            value = self.core_raw.get("session_start_time")
+        elif self.version is SchemaVersion.V2:
+            value = self.core_raw.get("acquisition_start_time")
+        else:
+            value = self.core_raw.get("session_start_time")
+            if value is None:
+                epochs = self.get_epoch_records()
+                value = epochs[0]["start_time"] if epochs else None
+        return None if value is None else str(value)
+
+    def get_subject_details(self) -> Dict[str, Optional[str]]:
+        """Subject sex, species, date of birth and genotype.
+
+        Read from ``subject.json`` for v1 and v2, and from the ``subject``
+        block of a minimal document.
+
+        Returns
+        -------
+        dict
+            Keyed ``sex``, ``species``, ``date_of_birth`` and ``genotype``;
+            each value is ``None`` when absent.
+        """
+        if self.version is SchemaVersion.MINIMAL:
+            return _subject_details(self.core_raw.get("subject"))
+        if self.version is SchemaVersion.V2:
+            return _subject_details(
+                (self.subject_raw or {}).get("subject_details")
+            )
+        return _subject_details(self.subject_raw)
+
+    def get_institution(self) -> Optional[str]:
+        """Institution name.
+
+        Read from ``data_description.json``, falling back to an
+        ``institution`` key on the core dict, which is how a minimal document
+        supplies it.
+
+        Returns
+        -------
+        str or None
+            The institution name, or ``None`` when no source provides one.
+        """
+        value = (self.data_description_raw or {}).get("institution")
+        if value is None:
+            value = self.core_raw.get("institution")
+        return _name_of(value)
+
+    def check_nwb_requirements(self) -> NwbRequirements:
+        """Report which NWB fields this document does not supply.
+
+        Lets a pipeline's first step reject an input that the NWB step would
+        fail on, and lets the NWB step note the optional fields it omitted.
+
+        Returns
+        -------
+        NwbRequirements
+            The missing required and optional fields, in declaration order.
+        """
+        present = {
+            "frame_rate": self.get_frame_rate(required=False),
+            "session_start_time": self.get_session_start_time(),
+            "planes": self.get_plane_records() or None,
+            "subject_id": self.get_subject_id(),
+            "dataset_name": self.get_dataset_name(),
+            "institution": self.get_institution(),
+            **self.get_subject_details(),
+        }
+        return NwbRequirements(
+            missing_required=tuple(
+                f for f in NWB_REQUIRED_FIELDS if present[f] is None
+            ),
+            missing_optional=tuple(
+                f for f in NWB_OPTIONAL_FIELDS if present[f] is None
+            ),
+        )

@@ -2,7 +2,10 @@
 
 from aind_pophys_metadata.core import (
     DEFAULT_LENGTH_UNIT,
+    NWB_OPTIONAL_FIELDS,
+    NWB_REQUIRED_FIELDS,
     CoreMetadata,
+    NwbRequirements,
 )
 from aind_pophys_metadata.io import (
     DATA_DESCRIPTION_FILE,
@@ -72,6 +75,9 @@ __all__ = [
     # core
     "CoreMetadata",
     "DEFAULT_LENGTH_UNIT",
+    "NWB_OPTIONAL_FIELDS",
+    "NWB_REQUIRED_FIELDS",
+    "NwbRequirements",
     # io
     "DATA_DESCRIPTION_FILE",
     "MINIMAL_CORE_FILE",

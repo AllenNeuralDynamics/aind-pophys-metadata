@@ -72,6 +72,14 @@ Example:
   "instrument_id": "MESO.1",
   "subject_id": "772414",
   "dataset_name": "single-plane-ophys_772414_2025-04-11_17-41-16",
+  "session_start_time": "2025-04-11T17:41:16-07:00",
+  "institution": "Allen Institute for Neural Dynamics",
+  "subject": {
+    "sex": "Female",
+    "species": "Mus musculus",
+    "date_of_birth": "2025-01-02",
+    "genotype": "Slc17a7-IRES2-Cre/wt"
+  },
   "excitation_nm": 920,
   "emission_nm": 514,
   "planes": [
@@ -95,6 +103,10 @@ Example:
   ]
 }
 ```
+
+`session_start_time`, `institution` and `subject` are optional. Without `session_start_time`, the first epoch's
+`start_time` is used. `CoreMetadata.check_nwb_requirements()` lists the fields an NWB file needs
+(`NWB_REQUIRED_FIELDS`) and the ones it records when present (`NWB_OPTIONAL_FIELDS`) that a document does not supply.
 
 ## Usage
 

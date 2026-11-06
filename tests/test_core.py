@@ -1720,5 +1720,180 @@ class TestEpochRecords(_CoreFileCase):
         self.assertEqual(core.logger, logging.getLogger(core.__name__))
 
 
+_FULL_MINIMAL = {
+    "frame_rate": 30.0,
+    "subject_id": "0322R",
+    "dataset_name": "single-plane-ophys_0322R_2026-10-30_00-00-00",
+    "session_start_time": "2026-10-30T09:00:00+00:00",
+    "institution": "Kempner Institute",
+    "subject": {
+        "sex": "Male",
+        "species": "Mus musculus",
+        "date_of_birth": "2026-01-01",
+        "genotype": "wt/wt",
+    },
+    "planes": [{"plane_index": 0, "um_per_pixel": 2.0}],
+    "epochs": [{"start_time": "2026-10-30T09:05:00+00:00"}],
+}
+
+
+class TestNameOf(unittest.TestCase):
+    """Names read from bare strings or named dicts."""
+
+    def test_shapes(self) -> None:
+        """A string, a named dict and None are all accepted."""
+        self.assertEqual(core._name_of("Mus musculus"), "Mus musculus")
+        self.assertEqual(
+            core._name_of({"name": "Mus musculus"}), "Mus musculus"
+        )
+        self.assertIsNone(core._name_of({}))
+        self.assertIsNone(core._name_of(None))
+
+
+class TestSessionStartTime(_CoreFileCase):
+    """The session start time, per schema version."""
+
+    def test_v1(self) -> None:
+        """v1 records session_start_time."""
+        loaded = self.load(io.V1_CORE_FILE, {"session_start_time": "t1"})
+        self.assertEqual(loaded.get_session_start_time(), "t1")
+
+    def test_v2(self) -> None:
+        """v2 records acquisition_start_time."""
+        loaded = self.load(io.V2_CORE_FILE, {"acquisition_start_time": "t2"})
+        self.assertEqual(loaded.get_session_start_time(), "t2")
+
+    def test_minimal_explicit_wins_over_epochs(self) -> None:
+        """An explicit minimal session_start_time is used as given."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, _FULL_MINIMAL)
+        self.assertEqual(
+            loaded.get_session_start_time(), "2026-10-30T09:00:00+00:00"
+        )
+
+    def test_minimal_falls_back_to_first_epoch(self) -> None:
+        """Without session_start_time, the first epoch's start is used."""
+        loaded = self.load(
+            io.MINIMAL_CORE_FILE,
+            {"epochs": [{"start_time": "e1"}, {"start_time": "e2"}]},
+        )
+        self.assertEqual(loaded.get_session_start_time(), "e1")
+
+    def test_minimal_absent(self) -> None:
+        """No start time and no epochs gives None."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {})
+        self.assertIsNone(loaded.get_session_start_time())
+
+
+class TestSubjectDetails(_CoreFileCase):
+    """Subject details from subject.json or the minimal subject block."""
+
+    def test_minimal(self) -> None:
+        """The minimal document's subject block is read."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, _FULL_MINIMAL)
+        self.assertEqual(
+            loaded.get_subject_details(),
+            {
+                "sex": "Male",
+                "species": "Mus musculus",
+                "date_of_birth": "2026-01-01",
+                "genotype": "wt/wt",
+            },
+        )
+
+    def test_v2_reads_subject_details(self) -> None:
+        """v2 nests the fields under subject_details; species is a dict."""
+        (self.root / io.SUBJECT_FILE).write_text(
+            json.dumps(
+                {
+                    "subject_details": {
+                        "sex": "Female",
+                        "species": {"name": "Mus musculus"},
+                        "date_of_birth": "2026-02-02",
+                        "genotype": "Cre/wt",
+                    }
+                }
+            )
+        )
+        loaded = self.load(io.V2_CORE_FILE, {})
+        self.assertEqual(
+            loaded.get_subject_details(),
+            {
+                "sex": "Female",
+                "species": "Mus musculus",
+                "date_of_birth": "2026-02-02",
+                "genotype": "Cre/wt",
+            },
+        )
+
+    def test_v1_reads_subject_json_flat(self) -> None:
+        """v1 subject.json carries the fields at the top level."""
+        (self.root / io.SUBJECT_FILE).write_text(
+            json.dumps({"sex": "Male", "species": {"name": "Mus musculus"}})
+        )
+        details = self.load(io.V1_CORE_FILE, {}).get_subject_details()
+        self.assertEqual(details["sex"], "Male")
+        self.assertEqual(details["species"], "Mus musculus")
+        self.assertIsNone(details["genotype"])
+
+    def test_absent_everywhere(self) -> None:
+        """No subject information gives all-None values."""
+        details = self.load(io.MINIMAL_CORE_FILE, {}).get_subject_details()
+        self.assertEqual(set(details.values()), {None})
+
+
+class TestInstitution(_CoreFileCase):
+    """The institution name."""
+
+    def test_data_description_wins(self) -> None:
+        """data_description.json's institution is canonical."""
+        (self.root / io.DATA_DESCRIPTION_FILE).write_text(
+            json.dumps({"institution": {"name": "AIND", "abbreviation": "A"}})
+        )
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"institution": "other"})
+        self.assertEqual(loaded.get_institution(), "AIND")
+
+    def test_minimal_fallback(self) -> None:
+        """A minimal document supplies it itself."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"institution": "Kempner"})
+        self.assertEqual(loaded.get_institution(), "Kempner")
+
+    def test_absent(self) -> None:
+        """No institution gives None."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {})
+        self.assertIsNone(loaded.get_institution())
+
+
+class TestCheckNwbRequirements(_CoreFileCase):
+    """The NWB field report."""
+
+    def test_complete_minimal_document(self) -> None:
+        """A complete minimal document misses nothing."""
+        report = self.load(
+            io.MINIMAL_CORE_FILE, _FULL_MINIMAL
+        ).check_nwb_requirements()
+        self.assertTrue(report.ok)
+        self.assertEqual(report.missing_required, ())
+        self.assertEqual(report.missing_optional, ())
+
+    def test_empty_minimal_document(self) -> None:
+        """An empty document misses every field, in declaration order."""
+        report = self.load(io.MINIMAL_CORE_FILE, {}).check_nwb_requirements()
+        self.assertFalse(report.ok)
+        self.assertEqual(report.missing_required, core.NWB_REQUIRED_FIELDS)
+        self.assertEqual(report.missing_optional, core.NWB_OPTIONAL_FIELDS)
+
+    def test_only_optional_missing_is_ok(self) -> None:
+        """Missing optional fields do not fail the check."""
+        blob = {
+            "frame_rate": 30.0,
+            "planes": [{"plane_index": 0}],
+            "epochs": [{"start_time": "t"}],
+        }
+        report = self.load(io.MINIMAL_CORE_FILE, blob).check_nwb_requirements()
+        self.assertTrue(report.ok)
+        self.assertIn("sex", report.missing_optional)
+        self.assertIn("subject_id", report.missing_optional)
+
+
 if __name__ == "__main__":
     unittest.main()
