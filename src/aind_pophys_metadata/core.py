@@ -743,9 +743,7 @@ def _epoch_records(core_raw: dict) -> List[Dict[str, Any]]:
         ``modalities``.
     """
     by_start_time = _tiff_stems_by_start_time(core_raw)
-    epochs = core_raw.get("stimulus_epochs")
-    if epochs is None:
-        epochs = core_raw.get("epochs") or []
+    epochs = _raw_epochs(core_raw)
     records: List[Dict[str, Any]] = []
     for epoch in epochs:
         start_time = epoch.get("stimulus_start_time", epoch.get("start_time"))
@@ -779,6 +777,235 @@ def _epoch_records(core_raw: dict) -> List[Dict[str, Any]]:
             }
         )
     return records
+
+
+def _raw_epochs(core_raw: dict) -> List[dict]:
+    """Return the raw epoch dicts, in the order recorded.
+
+    Parameters
+    ----------
+    core_raw : dict
+        Raw core metadata dict.
+
+    Returns
+    -------
+    list of dict
+        ``stimulus_epochs`` (v1, v2), else ``epochs`` (minimal).
+    """
+    epochs = core_raw.get("stimulus_epochs")
+    if epochs is None:
+        epochs = core_raw.get("epochs") or []
+    return list(epochs)
+
+
+# ---------------------------------------------------------------------------
+# Acquisition roles: raw format, epoch roles, instrument
+# ---------------------------------------------------------------------------
+
+#: One plane recorded as TIFF files, grouped into epochs by file stem.
+RAW_FORMAT_TIFF_STACK = "tiff_stack"
+#: The AIND mesoscope layout: ``*platform.json``, ``*timeseries.tiff``, ...
+RAW_FORMAT_MESOSCOPE = "mesoscope_aind"
+#: Every raw format the pipeline converts.
+RAW_FORMATS = (RAW_FORMAT_TIFF_STACK, RAW_FORMAT_MESOSCOPE)
+
+# AIND conventions the roles are derived from for v1 and v2 documents. No
+# other pipeline code reads rig names or stimulus names.
+_AIND_TIFF_STACK_RIG = "Bergamo"
+_AIND_MESOSCOPE_RIG = "MESO"
+_AIND_PHOTOSTIM_STIMULUS = "2p photostimulation"
+_AIND_REFERENCE_STIMULUS = "single neuron BCI conditioning"
+_AIND_MESOSCOPE_DESCRIPTION = "AIND Multiplane Mesoscope 2P Rig"
+_AIND_MANUFACTURER = "Thorlabs"
+_UNKNOWN_RIG_DESCRIPTION = "Unknown 2P rig"
+
+
+def _raw_format_from_instrument_id(
+    instrument_id: Optional[str],
+) -> Optional[str]:
+    """Derive the raw format from an AIND instrument id.
+
+    Parameters
+    ----------
+    instrument_id : str or None
+        v1 ``rig_id`` or v2 ``instrument_id``.
+
+    Returns
+    -------
+    str or None
+        ``tiff_stack`` for a Bergamo rig, ``mesoscope_aind`` for a mesoscope,
+        ``None`` otherwise.
+    """
+    if not instrument_id:
+        return None
+    if _AIND_TIFF_STACK_RIG in instrument_id:
+        return RAW_FORMAT_TIFF_STACK
+    if _AIND_MESOSCOPE_RIG in instrument_id.upper():
+        return RAW_FORMAT_MESOSCOPE
+    return None
+
+
+def _aind_instrument_description(instrument_id: Optional[str]) -> str:
+    """Describe an AIND microscope from its instrument id.
+
+    Parameters
+    ----------
+    instrument_id : str or None
+        v1 ``rig_id`` or v2 ``instrument_id``.
+
+    Returns
+    -------
+    str
+        A human-readable description.
+    """
+    if instrument_id and _AIND_MESOSCOPE_RIG in instrument_id.upper():
+        return _AIND_MESOSCOPE_DESCRIPTION
+    if instrument_id:
+        return f"AIND 2P rig {instrument_id}"
+    return _UNKNOWN_RIG_DESCRIPTION
+
+
+def _aind_epoch_label(
+    tiff_stem: Optional[str], stimulus_name: Optional[str]
+) -> Optional[str]:
+    """Name an AIND epoch from its Bergamo TIFF stem.
+
+    Parameters
+    ----------
+    tiff_stem : str or None
+        The epoch's TIFF stem.
+    stimulus_name : str or None
+        The epoch's stimulus name, used when it has no stem.
+
+    Returns
+    -------
+    str or None
+        ``BCI``, ``photostim`` or ``photostim_post`` for the stems the
+        Bergamo rig writes; the stem itself otherwise.
+    """
+    if not tiff_stem:
+        return stimulus_name
+    if "slm" in tiff_stem:
+        return "photostim_post" if "post" in tiff_stem else "photostim"
+    if "neuron" in tiff_stem:
+        return "BCI"
+    return tiff_stem
+
+
+def _with_aind_epoch_roles(
+    records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Add epoch roles derived from AIND stimulus names.
+
+    The reference is the first conditioning epoch carrying a TIFF stem.
+
+    Parameters
+    ----------
+    records : list of dict
+        Records from :func:`_epoch_records`.
+
+    Returns
+    -------
+    list of dict
+        The records with ``photostim``, ``reference`` and ``label`` added.
+    """
+    reference_found = False
+    out: List[Dict[str, Any]] = []
+    for record in records:
+        name = record["stimulus_name"]
+        is_reference = (
+            not reference_found
+            and name == _AIND_REFERENCE_STIMULUS
+            and bool(record["tiff_stem"])
+        )
+        reference_found = reference_found or is_reference
+        out.append(
+            {
+                **record,
+                "photostim": name == _AIND_PHOTOSTIM_STIMULUS,
+                "reference": is_reference,
+                "label": _aind_epoch_label(record["tiff_stem"], name),
+            }
+        )
+    return out
+
+
+def _stated_flag(epoch: dict, key: str, default: bool, path: Path) -> bool:
+    """Read a boolean epoch flag, refusing anything but a JSON boolean.
+
+    Parameters
+    ----------
+    epoch : dict
+        Raw minimal epoch dict.
+    key : str
+        The flag name.
+    default : bool
+        Value when the flag is absent.
+    path : Path
+        Core file, named in the error.
+
+    Returns
+    -------
+    bool
+        The flag.
+
+    Raises
+    ------
+    ValueError
+        If the flag is present and not a boolean; ``"false"`` would
+        otherwise read as true.
+    """
+    value = epoch.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"Epoch {epoch.get('stimulus_name')!r} in {path.name}: {key} "
+            f"must be true or false, got {value!r}."
+        )
+    return value
+
+
+def _with_minimal_epoch_roles(
+    records: List[Dict[str, Any]], raw_epochs: List[dict], path: Path
+) -> List[Dict[str, Any]]:
+    """Add the epoch roles a minimal document states, with defaults.
+
+    ``photostim`` defaults to false and ``label`` to the stimulus name. When
+    no epoch states ``reference``, every non-photostim epoch is a reference
+    epoch.
+
+    Parameters
+    ----------
+    records : list of dict
+        Records from :func:`_epoch_records`.
+    raw_epochs : list of dict
+        The raw epochs, aligned with ``records``.
+    path : Path
+        Core file, named in errors.
+
+    Returns
+    -------
+    list of dict
+        The records with ``photostim``, ``reference`` and ``label`` added.
+    """
+    reference_stated = any("reference" in e for e in raw_epochs)
+    out: List[Dict[str, Any]] = []
+    for record, epoch in zip(records, raw_epochs):
+        photostim = _stated_flag(epoch, "photostim", False, path)
+        reference = _stated_flag(
+            epoch,
+            "reference",
+            not photostim and not reference_stated,
+            path,
+        )
+        out.append(
+            {
+                **record,
+                "photostim": photostim,
+                "reference": reference,
+                "label": epoch.get("label") or record["stimulus_name"],
+            }
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1154,16 +1381,99 @@ class CoreMetadata:
     def get_epoch_records(self) -> List[Dict[str, Any]]:
         """Stimulus epochs as plain dicts, in the order recorded.
 
-        No version branch, because no version needs one -- see
-        :func:`_epoch_records`.
+        A minimal document states each epoch's roles; v1 and v2 roles are
+        derived from AIND stimulus names and TIFF stems.
 
         Returns
         -------
         list of dict
             One record per epoch, keyed ``stimulus_name``, ``start_time``,
-            ``tiff_stem`` and ``modalities``.
+            ``tiff_stem``, ``modalities``, ``photostim`` (photostimulation,
+            left out of segmentation), ``reference`` (frames that form the
+            registration reference) and ``label`` (the NWB epoch name).
+
+        Raises
+        ------
+        ValueError
+            If a minimal epoch's ``photostim`` or ``reference`` is not a
+            boolean.
         """
-        return _epoch_records(self.core_raw)
+        records = _epoch_records(self.core_raw)
+        if self.version is SchemaVersion.MINIMAL:
+            return _with_minimal_epoch_roles(
+                records, _raw_epochs(self.core_raw), self.core_path
+            )
+        return _with_aind_epoch_roles(records)
+
+    def get_raw_format(self, *, required: bool = False) -> Optional[str]:
+        """The raw movie layout, one of :data:`RAW_FORMATS`.
+
+        A minimal document states ``raw_format``; otherwise it is derived from
+        the AIND instrument id.
+
+        Parameters
+        ----------
+        required : bool, optional
+            Raise when no format is stated or derivable instead of returning
+            ``None``.
+
+        Returns
+        -------
+        str or None
+            The raw format, or ``None`` when unknown and not ``required``.
+
+        Raises
+        ------
+        ValueError
+            If a stated format is not in :data:`RAW_FORMATS`, or if
+            ``required`` and none is known.
+        """
+        stated = None
+        if self.version is SchemaVersion.MINIMAL:
+            stated = self.core_raw.get("raw_format")
+        if stated is not None and stated not in RAW_FORMATS:
+            raise ValueError(
+                f"raw_format {stated!r} in {self.core_path.name} is not one "
+                f"of {RAW_FORMATS}."
+            )
+        instrument_id = self.get_instrument_id()
+        value = stated or _raw_format_from_instrument_id(instrument_id)
+        if value is None and required:
+            v1 = self.version is SchemaVersion.V1
+            key = "rig_id" if v1 else "instrument_id"
+            raise ValueError(
+                f"{self.core_path.name} states no raw_format and its {key} "
+                f"{instrument_id!r} names no known AIND rig. A metadata.json "
+                f"states one of {RAW_FORMATS}."
+            )
+        return value
+
+    def get_instrument(self) -> Dict[str, Optional[str]]:
+        """The microscope's name, manufacturer and description.
+
+        A minimal document states these in an optional ``instrument`` block,
+        whose ``name`` defaults to ``instrument_id``. v1 and v2 values are
+        derived from the AIND instrument id.
+
+        Returns
+        -------
+        dict
+            Keyed ``name``, ``manufacturer`` and ``description``; each value
+            is ``None`` when unknown.
+        """
+        instrument_id = self.get_instrument_id()
+        if self.version is SchemaVersion.MINIMAL:
+            block = self.core_raw.get("instrument") or {}
+            return {
+                "name": _name_of(block.get("name")) or instrument_id,
+                "manufacturer": _name_of(block.get("manufacturer")),
+                "description": _name_of(block.get("description")),
+            }
+        return {
+            "name": instrument_id,
+            "manufacturer": _AIND_MANUFACTURER,
+            "description": _aind_instrument_description(instrument_id),
+        }
 
     def get_session_start_time(self) -> Optional[str]:
         """Session start time as recorded, an ISO 8601 string.

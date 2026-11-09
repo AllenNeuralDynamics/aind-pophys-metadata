@@ -27,7 +27,10 @@ Shared `aind-data-schema` metadata reads and `Processing` / `QualityControl` out
     - um_per_pixel
     - excitation_wavelength
     - emission_wavelength
-    - epoch_records — one dict per stimulus epoch, in the order recorded
+    - epoch_records — one dict per stimulus epoch, in the order recorded, with its roles:
+      `photostim`, `reference` and `label`
+    - raw_format — `tiff_stack` or `mesoscope_aind`
+    - instrument — the microscope's name, manufacturer and description
 
 - **`io`** — filesystem, paths, and JSON only: finds metadata files in an input directory, detects
   the schema version from the filename, reads raw dicts.
@@ -69,7 +72,13 @@ Example:
 ```json
 {
   "frame_rate": 9.48,
-  "instrument_id": "MESO.1",
+  "raw_format": "tiff_stack",
+  "instrument_id": "rig-1",
+  "instrument": {
+    "name": "rig-1",
+    "manufacturer": "Thorlabs",
+    "description": "Resonant-scanning two-photon microscope"
+  },
   "subject_id": "772414",
   "dataset_name": "single-plane-ophys_772414_2025-04-11_17-41-16",
   "session_start_time": "2025-04-11T17:41:16-07:00",
@@ -98,11 +107,27 @@ Example:
       "stimulus_name": "spontaneous activity",
       "start_time": "2025-04-11T17:49:00-07:00",
       "tiff_stem": "spont",
-      "modalities": ["None"]
+      "modalities": ["None"],
+      "photostim": false,
+      "reference": true,
+      "label": "spontaneous"
     }
   ]
 }
 ```
+
+`raw_format` tells the pipeline how to convert the raw files: `tiff_stack` for one plane recorded as
+TIFF files under `pophys/`, grouped into epochs by file stem, and `mesoscope_aind` for the AIND
+mesoscope layout. Each epoch's `photostim` (default `false`) leaves it out of segmentation, and
+`reference` marks the epochs whose frames form the motion-correction reference. When no epoch states
+`reference`, every epoch that is not photostim is a reference epoch. `label` names the epoch in the NWB file and
+defaults to `stimulus_name`. The `instrument` block is optional, and its `name` defaults to
+`instrument_id`.
+
+For v1 and v2 documents these values are derived from AIND conventions: the instrument id names the
+rig (`Bergamo` gives `tiff_stack`, `MESO` gives `mesoscope_aind`), the stimulus names mark the
+photostim epochs and the first BCI conditioning epoch as the reference, and the TIFF stems give the
+labels. No other pipeline code reads rig or stimulus names.
 
 `session_start_time`, `institution` and `subject` are optional. Without `session_start_time`, the first epoch's
 `start_time` is used. `CoreMetadata.check_nwb_requirements()` lists the fields an NWB file needs
