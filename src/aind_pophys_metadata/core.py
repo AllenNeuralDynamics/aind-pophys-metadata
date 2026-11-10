@@ -814,9 +814,6 @@ _AIND_TIFF_STACK_RIG = "Bergamo"
 _AIND_MESOSCOPE_RIG = "MESO"
 _AIND_PHOTOSTIM_STIMULUS = "2p photostimulation"
 _AIND_REFERENCE_STIMULUS = "single neuron BCI conditioning"
-_AIND_MESOSCOPE_DESCRIPTION = "AIND Multiplane Mesoscope 2P Rig"
-_AIND_MANUFACTURER = "Thorlabs"
-_UNKNOWN_RIG_DESCRIPTION = "Unknown 2P rig"
 
 
 def _raw_format_from_instrument_id(
@@ -842,26 +839,6 @@ def _raw_format_from_instrument_id(
     if _AIND_MESOSCOPE_RIG in instrument_id.upper():
         return RAW_FORMAT_MESOSCOPE
     return None
-
-
-def _aind_instrument_description(instrument_id: Optional[str]) -> str:
-    """Describe an AIND microscope from its instrument id.
-
-    Parameters
-    ----------
-    instrument_id : str or None
-        v1 ``rig_id`` or v2 ``instrument_id``.
-
-    Returns
-    -------
-    str
-        A human-readable description.
-    """
-    if instrument_id and _AIND_MESOSCOPE_RIG in instrument_id.upper():
-        return _AIND_MESOSCOPE_DESCRIPTION
-    if instrument_id:
-        return f"AIND 2P rig {instrument_id}"
-    return _UNKNOWN_RIG_DESCRIPTION
 
 
 def _aind_epoch_label(
@@ -1557,8 +1534,9 @@ class CoreMetadata:
         """The microscope's name, manufacturer and description.
 
         A minimal document states these in an optional ``instrument`` block,
-        whose ``name`` defaults to ``instrument_id``. v1 and v2 values are
-        derived from the AIND instrument id.
+        whose ``name`` defaults to ``instrument_id``. v1 and v2 documents
+        carry only the instrument id, so their manufacturer and description
+        are ``None``.
 
         Returns
         -------
@@ -1576,8 +1554,8 @@ class CoreMetadata:
             }
         return {
             "name": instrument_id,
-            "manufacturer": _AIND_MANUFACTURER,
-            "description": _aind_instrument_description(instrument_id),
+            "manufacturer": None,
+            "description": None,
         }
 
     def get_session_start_time(self) -> Optional[str]:

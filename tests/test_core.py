@@ -2184,21 +2184,16 @@ class TestRawFormat(_CoreFileCase):
 class TestInstrument(_CoreFileCase):
     """The microscope is stated by a minimal document, else derived."""
 
-    def test_aind_derivation(self) -> None:
-        """AIND devices keep the descriptions the NWB step wrote."""
-        cases = (
-            ({"instrument_id": "MESO.2"}, "AIND Multiplane Mesoscope 2P Rig"),
-            ({"instrument_id": "Bergamo_2P"}, "AIND 2P rig Bergamo_2P"),
-            ({}, "Unknown 2P rig"),
-        )
-        for raw, description in cases:
+    def test_v1_v2_state_only_the_id(self) -> None:
+        """v1 and v2 report the id, with no manufacturer or description."""
+        for raw in ({"instrument_id": "MESO.2"}, {}):
             with self.subTest(raw=raw):
                 self.assertEqual(
                     _direct(io.SCHEMA_V2, raw).get_instrument(),
                     {
                         "name": raw.get("instrument_id"),
-                        "manufacturer": "Thorlabs",
-                        "description": description,
+                        "manufacturer": None,
+                        "description": None,
                     },
                 )
 
