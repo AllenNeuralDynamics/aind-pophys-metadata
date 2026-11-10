@@ -2078,6 +2078,53 @@ class TestMinimalEpochAnnotations(_CoreFileCase):
                 self.assertIn(key, str(ctx.exception))
                 self.assertIn(io.MINIMAL_CORE_FILE, str(ctx.exception))
 
+    def test_epochs_without_a_stem_are_not_default_references(self) -> None:
+        """Only epochs with frames join the default reference set."""
+        records = self._records(
+            [{"stimulus_name": "a"}, {"stimulus_name": "b", "tiff_stem": "b"}]
+        )
+        self.assertEqual([r["reference"] for r in records], [False, True])
+
+    def test_invalid_epochs_raise(self) -> None:
+        """Each contradiction or typo fails with a message naming it."""
+        cases = {
+            "photo_stim": [{"stimulus_name": "a", "photo_stim": True}],
+            "label must be": [{"stimulus_name": "a", "label": 5}],
+            "both photostim and reference": [
+                {
+                    "stimulus_name": "a",
+                    "tiff_stem": "a",
+                    "photostim": True,
+                    "reference": True,
+                }
+            ],
+            "no tiff_stem": [{"stimulus_name": "a", "reference": True}],
+            "share tiff_stem": [
+                {"stimulus_name": "a", "tiff_stem": "x"},
+                {"stimulus_name": "b", "tiff_stem": "x"},
+            ],
+        }
+        for expected, epochs in cases.items():
+            with self.subTest(expected=expected):
+                with self.assertRaises(ValueError) as ctx:
+                    self._records(epochs)
+                self.assertIn(expected, str(ctx.exception))
+
+    def test_tiff_stack_without_a_reference_raises(self) -> None:
+        """Motion correction would otherwise fail later with no reference."""
+        loaded = self.load(
+            io.MINIMAL_CORE_FILE,
+            {
+                "raw_format": "tiff_stack",
+                "epochs": [
+                    {"stimulus_name": "a", "tiff_stem": "a", "photostim": True}
+                ],
+            },
+        )
+        with self.assertRaises(ValueError) as ctx:
+            loaded.get_epoch_records()
+        self.assertIn("no reference epoch", str(ctx.exception))
+
 
 class TestRawFormat(_CoreFileCase):
     """The raw format is stated by a minimal document, else derived."""

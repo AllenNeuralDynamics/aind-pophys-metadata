@@ -120,8 +120,10 @@ Example:
 TIFF files under `pophys/`, grouped into epochs by file stem, and `mesoscope_aind` for the AIND
 mesoscope layout. Each epoch's `photostim` (default `false`) leaves it out of segmentation, and
 `reference` marks the epochs whose frames form the motion-correction reference. When no epoch states
-`reference`, every epoch that is not photostim is a reference epoch. `label` names the epoch in the NWB file and
-defaults to `stimulus_name`. The `instrument` block is optional, and its `name` defaults to
+`reference`, every epoch that is not photostim and has a `tiff_stem` is a reference epoch. `label` names the epoch
+in the NWB file and defaults to `stimulus_name`. Epochs are checked when read: an unknown key, an epoch both
+photostim and reference, a reference epoch without a `tiff_stem`, a shared `tiff_stem`, or a `tiff_stack`
+document with no reference epoch raises. The `instrument` block is optional, and its `name` defaults to
 `instrument_id`.
 
 For v1 and v2 documents these values are derived from AIND conventions: the instrument id names the

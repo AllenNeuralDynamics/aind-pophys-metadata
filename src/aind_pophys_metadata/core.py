@@ -962,14 +962,108 @@ def _stated_flag(epoch: dict, key: str, default: bool, path: Path) -> bool:
     return value
 
 
+#: Keys a minimal epoch may carry; anything else is rejected as a typo.
+_MINIMAL_EPOCH_KEYS = frozenset(
+    {
+        "stimulus_name",
+        "start_time",
+        "tiff_stem",
+        "modalities",
+        "photostim",
+        "reference",
+        "label",
+    }
+)
+
+
+def _check_minimal_epoch(epoch: dict, path: Path) -> None:
+    """Reject unknown keys and a non-string label in one minimal epoch.
+
+    Parameters
+    ----------
+    epoch : dict
+        Raw minimal epoch dict.
+    path : Path
+        Core file, named in the error.
+
+    Raises
+    ------
+    ValueError
+        If the epoch carries an unknown key or a label that is not a
+        non-empty string.
+    """
+    name = epoch.get("stimulus_name")
+    unknown = sorted(set(epoch) - _MINIMAL_EPOCH_KEYS)
+    if unknown:
+        raise ValueError(
+            f"Epoch {name!r} in {path.name} has unknown keys {unknown}; "
+            f"allowed keys are {sorted(_MINIMAL_EPOCH_KEYS)}."
+        )
+    label = epoch.get("label")
+    if "label" in epoch and not (isinstance(label, str) and label):
+        raise ValueError(
+            f"Epoch {name!r} in {path.name}: label must be a non-empty "
+            f"string, got {label!r}."
+        )
+
+
+def _check_minimal_epoch_set(
+    records: List[Dict[str, Any]], raw_format: Optional[str], path: Path
+) -> None:
+    """Reject annotations that contradict each other across minimal epochs.
+
+    Parameters
+    ----------
+    records : list of dict
+        Annotated epoch records.
+    raw_format : str or None
+        The document's raw format.
+    path : Path
+        Core file, named in errors.
+
+    Raises
+    ------
+    ValueError
+        If an epoch is both photostim and reference, a reference epoch has no
+        TIFF stem, two epochs share a TIFF stem, or a ``tiff_stack`` document
+        has no reference epoch.
+    """
+    for r in records:
+        if r["photostim"] and r["reference"]:
+            raise ValueError(
+                f"Epoch {r['stimulus_name']!r} in {path.name} is both "
+                "photostim and reference."
+            )
+        if r["reference"] and not r["tiff_stem"]:
+            raise ValueError(
+                f"Reference epoch {r['stimulus_name']!r} in {path.name} has "
+                "no tiff_stem."
+            )
+    stems = [r["tiff_stem"] for r in records if r["tiff_stem"]]
+    duplicates = sorted({s for s in stems if stems.count(s) > 1})
+    if duplicates:
+        raise ValueError(
+            f"Epochs in {path.name} share tiff_stem values {duplicates}."
+        )
+    if raw_format == RAW_FORMAT_TIFF_STACK and not any(
+        r["reference"] for r in records
+    ):
+        raise ValueError(
+            f"{path.name} is a tiff_stack document with no reference epoch."
+        )
+
+
 def _with_minimal_epoch_annotations(
-    records: List[Dict[str, Any]], raw_epochs: List[dict], path: Path
+    records: List[Dict[str, Any]],
+    raw_epochs: List[dict],
+    raw_format: Optional[str],
+    path: Path,
 ) -> List[Dict[str, Any]]:
     """Add the epoch annotations a minimal document states, with defaults.
 
     ``photostim`` defaults to false and ``label`` to the stimulus name. When
-    no epoch states ``reference``, every non-photostim epoch is a reference
-    epoch.
+    no epoch states ``reference``, every non-photostim epoch with a TIFF stem
+    is a reference epoch.
 
     Parameters
     ----------
@@ -977,6 +1071,8 @@ def _with_minimal_epoch_annotations(
         Records from :func:`_epoch_records`.
     raw_epochs : list of dict
         The raw epochs, aligned with ``records``.
+    raw_format : str or None
+        The document's raw format.
     path : Path
         Core file, named in errors.
 
@@ -984,15 +1080,24 @@ def _with_minimal_epoch_annotations(
     -------
     list of dict
         The records with ``photostim``, ``reference`` and ``label`` added.
+
+    Raises
+    ------
+    ValueError
+        If an epoch or the set of epochs fails :func:`_check_minimal_epoch`
+        or :func:`_check_minimal_epoch_set`.
     """
     reference_stated = any("reference" in e for e in raw_epochs)
     out: List[Dict[str, Any]] = []
     for record, epoch in zip(records, raw_epochs):
+        _check_minimal_epoch(epoch, path)
         photostim = _stated_flag(epoch, "photostim", False, path)
         reference = _stated_flag(
             epoch,
             "reference",
-            not photostim and not reference_stated,
+            not photostim
+            and not reference_stated
+            and bool(record["tiff_stem"]),
             path,
         )
         out.append(
@@ -1003,6 +1108,7 @@ def _with_minimal_epoch_annotations(
                 "label": epoch.get("label") or record["stimulus_name"],
             }
         )
+    _check_minimal_epoch_set(out, raw_format, path)
     return out
 
 
@@ -1388,13 +1494,19 @@ class CoreMetadata:
         Raises
         ------
         ValueError
-            If a minimal epoch's ``photostim`` or ``reference`` is not a
-            boolean.
+            If a minimal document's epochs are invalid: an unknown key, a
+            ``photostim`` or ``reference`` that is not a boolean, a label that
+            is not a non-empty string, an epoch both photostim and reference,
+            a reference epoch with no TIFF stem, a shared TIFF stem, or a
+            ``tiff_stack`` document with no reference epoch.
         """
         records = _epoch_records(self.core_raw)
         if self.version is SchemaVersion.MINIMAL:
             return _with_minimal_epoch_annotations(
-                records, _raw_epochs(self.core_raw), self.core_path
+                records,
+                _raw_epochs(self.core_raw),
+                self.get_raw_format(),
+                self.core_path,
             )
         return _with_aind_epoch_annotations(records)
 
