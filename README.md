@@ -27,7 +27,7 @@ Shared `aind-data-schema` metadata reads and `Processing` / `QualityControl` out
     - um_per_pixel
     - excitation_wavelength
     - emission_wavelength
-    - epoch_records — one dict per stimulus epoch, in the order recorded, with its roles:
+    - epoch_records — one dict per stimulus epoch, in the order recorded, with its annotations:
       `photostim`, `reference` and `label`
     - raw_format — `tiff_stack` or `mesoscope_aind`
     - instrument — the microscope's name, manufacturer and description

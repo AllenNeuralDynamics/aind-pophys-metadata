@@ -799,7 +799,7 @@ def _raw_epochs(core_raw: dict) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Acquisition roles: raw format, epoch roles, instrument
+# Raw format, instrument and epoch annotations
 # ---------------------------------------------------------------------------
 
 #: One plane recorded as TIFF files, grouped into epochs by file stem.
@@ -809,7 +809,7 @@ RAW_FORMAT_MESOSCOPE = "mesoscope_aind"
 #: Every raw format the pipeline converts.
 RAW_FORMATS = (RAW_FORMAT_TIFF_STACK, RAW_FORMAT_MESOSCOPE)
 
-# AIND conventions the roles are derived from for v1 and v2 documents.
+# AIND conventions these are derived from for v1 and v2 documents.
 _AIND_TIFF_STACK_RIG = "Bergamo"
 _AIND_MESOSCOPE_RIG = "MESO"
 _AIND_PHOTOSTIM_STIMULUS = "2p photostimulation"
@@ -891,10 +891,10 @@ def _aind_epoch_label(
     return tiff_stem
 
 
-def _with_aind_epoch_roles(
+def _with_aind_epoch_annotations(
     records: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Add epoch roles derived from AIND stimulus names.
+    """Add epoch annotations derived from AIND stimulus names.
 
     The reference is the first conditioning epoch carrying a TIFF stem.
 
@@ -962,10 +962,10 @@ def _stated_flag(epoch: dict, key: str, default: bool, path: Path) -> bool:
     return value
 
 
-def _with_minimal_epoch_roles(
+def _with_minimal_epoch_annotations(
     records: List[Dict[str, Any]], raw_epochs: List[dict], path: Path
 ) -> List[Dict[str, Any]]:
-    """Add the epoch roles a minimal document states, with defaults.
+    """Add the epoch annotations a minimal document states, with defaults.
 
     ``photostim`` defaults to false and ``label`` to the stimulus name. When
     no epoch states ``reference``, every non-photostim epoch is a reference
@@ -1374,8 +1374,8 @@ class CoreMetadata:
     def get_epoch_records(self) -> List[Dict[str, Any]]:
         """Stimulus epochs as plain dicts, in the order recorded.
 
-        A minimal document states each epoch's roles; v1 and v2 roles are
-        derived from AIND stimulus names and TIFF stems.
+        A minimal document states each epoch's annotations; v1 and v2
+        annotations are derived from AIND stimulus names and TIFF stems.
 
         Returns
         -------
@@ -1393,10 +1393,10 @@ class CoreMetadata:
         """
         records = _epoch_records(self.core_raw)
         if self.version is SchemaVersion.MINIMAL:
-            return _with_minimal_epoch_roles(
+            return _with_minimal_epoch_annotations(
                 records, _raw_epochs(self.core_raw), self.core_path
             )
-        return _with_aind_epoch_roles(records)
+        return _with_aind_epoch_annotations(records)
 
     def get_raw_format(self, *, required: bool = False) -> Optional[str]:
         """The raw movie layout, one of :data:`RAW_FORMATS`.

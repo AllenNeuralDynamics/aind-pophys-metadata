@@ -1587,7 +1587,7 @@ _BASE_EPOCH_KEYS = ("stimulus_name", "start_time", "tiff_stem", "modalities")
 
 
 def _base(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Drop the role keys, leaving what :func:`core._epoch_records` reads.
+    """Drop the annotations, leaving what :func:`core._epoch_records` reads.
 
     Parameters
     ----------
@@ -1933,7 +1933,7 @@ def _aind_epoch(name: str, stem: Optional[str]) -> dict:
     return epoch
 
 
-def _roles(records: List[Dict[str, Any]]) -> List[tuple]:
+def _epoch_annotations(records: List[Dict[str, Any]]) -> List[tuple]:
     """Return each record's ``(photostim, reference, label)``.
 
     Parameters
@@ -1944,13 +1944,13 @@ def _roles(records: List[Dict[str, Any]]) -> List[tuple]:
     Returns
     -------
     list of tuple
-        One role triple per record.
+        One annotation triple per record.
     """
     return [(r["photostim"], r["reference"], r["label"]) for r in records]
 
 
-class TestAindEpochRoles(unittest.TestCase):
-    """v1 and v2 roles reproduce the names the pipeline keyed on."""
+class TestAindEpochAnnotations(unittest.TestCase):
+    """v1 and v2 annotations reproduce the names the pipeline keyed on."""
 
     BERGAMO_EPOCHS = [
         _aind_epoch("spontaneous activity", "spont"),
@@ -1960,7 +1960,7 @@ class TestAindEpochRoles(unittest.TestCase):
         _aind_epoch("2p photostimulation", "slmpost"),
     ]
 
-    def test_bergamo_roles_match_the_name_conventions(self) -> None:
+    def test_bergamo_annotations_match_the_name_conventions(self) -> None:
         """Photostim by name, first BCI epoch as reference, stem labels."""
         for version in (io.SCHEMA_V1, io.SCHEMA_V2):
             with self.subTest(version=version):
@@ -1968,7 +1968,7 @@ class TestAindEpochRoles(unittest.TestCase):
                     version, {"stimulus_epochs": self.BERGAMO_EPOCHS}
                 )
                 self.assertEqual(
-                    _roles(built.get_epoch_records()),
+                    _epoch_annotations(built.get_epoch_records()),
                     [
                         (False, False, "spont"),
                         (False, True, "BCI"),
@@ -2004,8 +2004,8 @@ class TestAindEpochRoles(unittest.TestCase):
         self.assertEqual(built.get_epoch_records()[0]["label"], "spont")
 
 
-class TestMinimalEpochRoles(_CoreFileCase):
-    """A minimal document states its roles; defaults fill the rest."""
+class TestMinimalEpochAnnotations(_CoreFileCase):
+    """A minimal document states its annotations; defaults fill the rest."""
 
     def _records(self, epochs: List[dict]) -> List[Dict[str, Any]]:
         """Load a minimal document holding ``epochs``.
@@ -2033,7 +2033,7 @@ class TestMinimalEpochRoles(_CoreFileCase):
             ]
         )
         self.assertEqual(
-            _roles(records),
+            _epoch_annotations(records),
             [(False, True, "recording"), (False, True, "second")],
         )
 
@@ -2046,7 +2046,8 @@ class TestMinimalEpochRoles(_CoreFileCase):
             ]
         )
         self.assertEqual(
-            _roles(records), [(False, True, "a"), (True, False, "b")]
+            _epoch_annotations(records),
+            [(False, True, "a"), (True, False, "b")],
         )
 
     def test_stated_reference_turns_off_the_default(self) -> None:
