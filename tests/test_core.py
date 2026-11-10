@@ -1890,14 +1890,12 @@ class TestCheckNwbRequirements(_CoreFileCase):
         report = self.load(
             io.MINIMAL_CORE_FILE, _FULL_MINIMAL
         ).check_nwb_requirements()
-        self.assertTrue(report.ok)
         self.assertEqual(report.missing_required, ())
         self.assertEqual(report.missing_optional, ())
 
     def test_empty_minimal_document(self) -> None:
         """An empty document misses every field, in declaration order."""
         report = self.load(io.MINIMAL_CORE_FILE, {}).check_nwb_requirements()
-        self.assertFalse(report.ok)
         self.assertEqual(report.missing_required, core.NWB_REQUIRED_FIELDS)
         self.assertEqual(report.missing_optional, core.NWB_OPTIONAL_FIELDS)
 
@@ -1909,7 +1907,7 @@ class TestCheckNwbRequirements(_CoreFileCase):
             "epochs": [{"start_time": "t"}],
         }
         report = self.load(io.MINIMAL_CORE_FILE, blob).check_nwb_requirements()
-        self.assertTrue(report.ok)
+        self.assertEqual(report.missing_required, ())
         self.assertIn("sex", report.missing_optional)
         self.assertIn("subject_id", report.missing_optional)
 

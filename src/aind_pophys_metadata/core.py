@@ -809,8 +809,7 @@ RAW_FORMAT_MESOSCOPE = "mesoscope_aind"
 #: Every raw format the pipeline converts.
 RAW_FORMATS = (RAW_FORMAT_TIFF_STACK, RAW_FORMAT_MESOSCOPE)
 
-# AIND conventions the roles are derived from for v1 and v2 documents. No
-# other pipeline code reads rig names or stimulus names.
+# AIND conventions the roles are derived from for v1 and v2 documents.
 _AIND_TIFF_STACK_RIG = "Bergamo"
 _AIND_MESOSCOPE_RIG = "MESO"
 _AIND_PHOTOSTIM_STIMULUS = "2p photostimulation"
@@ -952,8 +951,7 @@ def _stated_flag(epoch: dict, key: str, default: bool, path: Path) -> bool:
     Raises
     ------
     ValueError
-        If the flag is present and not a boolean; ``"false"`` would
-        otherwise read as true.
+        If the flag is present and not a boolean.
     """
     value = epoch.get(key, default)
     if not isinstance(value, bool):
@@ -1078,11 +1076,6 @@ class NwbRequirements:
 
     missing_required: Tuple[str, ...]
     missing_optional: Tuple[str, ...]
-
-    @property
-    def ok(self) -> bool:
-        """Return whether every required field is present."""
-        return not self.missing_required
 
 
 # ---------------------------------------------------------------------------
@@ -1536,9 +1529,6 @@ class CoreMetadata:
 
     def check_nwb_requirements(self) -> NwbRequirements:
         """Report which NWB fields this document does not supply.
-
-        Lets a pipeline's first step reject an input that the NWB step would
-        fail on, and lets the NWB step note the optional fields it omitted.
 
         Returns
         -------
