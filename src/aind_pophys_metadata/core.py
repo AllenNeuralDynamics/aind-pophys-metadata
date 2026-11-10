@@ -1095,6 +1095,8 @@ def _with_minimal_epoch_annotations(
 
 #: Fields an NWB file cannot be written without.
 NWB_REQUIRED_FIELDS = ("frame_rate", "session_start_time", "planes")
+#: Fields the full pipeline cannot run without.
+PIPELINE_REQUIRED_FIELDS = NWB_REQUIRED_FIELDS + ("raw_format",)
 #: Fields an NWB file records when present and omits otherwise.
 NWB_OPTIONAL_FIELDS = (
     "subject_id",
@@ -1616,6 +1618,22 @@ class CoreMetadata:
         if value is None:
             value = self.core_raw.get("institution")
         return _name_of(value)
+
+    def check_pipeline_requirements(self) -> Tuple[str, ...]:
+        """Report which fields the full pipeline needs that are missing.
+
+        Applies to every input version.
+
+        Returns
+        -------
+        tuple of str
+            Entries of ``PIPELINE_REQUIRED_FIELDS`` this document does not
+            supply, in declaration order.
+        """
+        missing = set(self.check_nwb_requirements().missing_required)
+        if self.get_raw_format() is None:
+            missing.add("raw_format")
+        return tuple(f for f in PIPELINE_REQUIRED_FIELDS if f in missing)
 
     def check_nwb_requirements(self) -> NwbRequirements:
         """Report which NWB fields this document does not supply.

@@ -1912,6 +1912,36 @@ class TestCheckNwbRequirements(_CoreFileCase):
         self.assertIn("subject_id", report.missing_optional)
 
 
+class TestCheckPipelineRequirements(_CoreFileCase):
+    """The full-pipeline field report, for every input version."""
+
+    def test_complete_minimal_document(self) -> None:
+        """A complete minimal document misses nothing."""
+        blob = {**_FULL_MINIMAL, "raw_format": core.RAW_FORMAT_TIFF_STACK}
+        loaded = self.load(io.MINIMAL_CORE_FILE, blob)
+        self.assertEqual(loaded.check_pipeline_requirements(), ())
+
+    def test_empty_minimal_document(self) -> None:
+        """An empty document misses every field, in declaration order."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {})
+        self.assertEqual(
+            loaded.check_pipeline_requirements(),
+            core.PIPELINE_REQUIRED_FIELDS,
+        )
+
+    def test_v2_without_frame_rate(self) -> None:
+        """A v2 document is checked, not skipped."""
+        raw = {
+            **_v2_acquisition(planes=[{}]),
+            "instrument_id": "MESO.2",
+            "acquisition_start_time": "2026-10-30T09:00:00+00:00",
+        }
+        self.assertEqual(
+            _direct(io.SCHEMA_V2, raw).check_pipeline_requirements(),
+            ("frame_rate",),
+        )
+
+
 def _aind_epoch(name: str, stem: Optional[str]) -> dict:
     """Build a v1/v2 stimulus epoch carrying an optional TIFF stem.
 
