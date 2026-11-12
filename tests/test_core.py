@@ -1583,6 +1583,25 @@ class TestDisagreeingTiffStems(unittest.TestCase):
         self.assertEqual(records[0]["tiff_stem"], "spont")
 
 
+_BASE_EPOCH_KEYS = ("stimulus_name", "start_time", "tiff_stem", "modalities")
+
+
+def _base(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop the annotations, leaving what :func:`core._epoch_records` reads.
+
+    Parameters
+    ----------
+    records : list of dict
+        Epoch records from :meth:`CoreMetadata.get_epoch_records`.
+
+    Returns
+    -------
+    list of dict
+        The records restricted to the four base keys.
+    """
+    return [{k: r[k] for k in _BASE_EPOCH_KEYS} for r in records]
+
+
 class TestEpochRecords(_CoreFileCase):
     """Stimulus epochs read identically from every document shape."""
 
@@ -1608,7 +1627,7 @@ class TestEpochRecords(_CoreFileCase):
             ]
         }
         loaded = _direct(io.SCHEMA_V1, core_raw, name="session.json")
-        self.assertEqual(loaded.get_epoch_records(), self.EXPECTED)
+        self.assertEqual(_base(loaded.get_epoch_records()), self.EXPECTED)
 
     def test_v2_stream_notes_route(self) -> None:
         """v2 drops output_parameters, leaving the start-time join."""
@@ -1625,7 +1644,7 @@ class TestEpochRecords(_CoreFileCase):
             ],
         }
         loaded = _direct(io.SCHEMA_V2, core_raw)
-        self.assertEqual(loaded.get_epoch_records(), self.EXPECTED)
+        self.assertEqual(_base(loaded.get_epoch_records()), self.EXPECTED)
 
     def test_both_routes_agree(self) -> None:
         """Real v1 assets carry both; the cross-check must not conflict."""
@@ -1659,7 +1678,7 @@ class TestEpochRecords(_CoreFileCase):
                 ]
             },
         )
-        self.assertEqual(loaded.get_epoch_records(), self.EXPECTED)
+        self.assertEqual(_base(loaded.get_epoch_records()), self.EXPECTED)
 
     def test_no_version_parameter(self) -> None:
         """One reader covers all versions, so no version is passed in."""
@@ -1718,6 +1737,525 @@ class TestEpochRecords(_CoreFileCase):
     def test_module_logger_is_the_one_readers_warn_on(self) -> None:
         """The warnings the fleet greps for carry this module's name."""
         self.assertEqual(core.logger, logging.getLogger(core.__name__))
+
+
+_FULL_MINIMAL = {
+    "frame_rate": 30.0,
+    "subject_id": "0322R",
+    "dataset_name": "single-plane-ophys_0322R_2026-10-30_00-00-00",
+    "session_start_time": "2026-10-30T09:00:00+00:00",
+    "institution": "Kempner Institute",
+    "subject": {
+        "sex": "Male",
+        "species": "Mus musculus",
+        "date_of_birth": "2026-01-01",
+        "genotype": "wt/wt",
+    },
+    "planes": [{"plane_index": 0, "um_per_pixel": 2.0}],
+    "epochs": [{"start_time": "2026-10-30T09:05:00+00:00"}],
+}
+
+
+class TestNameOf(unittest.TestCase):
+    """Names read from bare strings or named dicts."""
+
+    def test_shapes(self) -> None:
+        """A string, a named dict and None are all accepted."""
+        self.assertEqual(core._name_of("Mus musculus"), "Mus musculus")
+        self.assertEqual(
+            core._name_of({"name": "Mus musculus"}), "Mus musculus"
+        )
+        self.assertIsNone(core._name_of({}))
+        self.assertIsNone(core._name_of(None))
+
+
+class TestSessionStartTime(_CoreFileCase):
+    """The session start time, per schema version."""
+
+    def test_v1(self) -> None:
+        """v1 records session_start_time."""
+        loaded = self.load(io.V1_CORE_FILE, {"session_start_time": "t1"})
+        self.assertEqual(loaded.get_session_start_time(), "t1")
+
+    def test_v2(self) -> None:
+        """v2 records acquisition_start_time."""
+        loaded = self.load(io.V2_CORE_FILE, {"acquisition_start_time": "t2"})
+        self.assertEqual(loaded.get_session_start_time(), "t2")
+
+    def test_minimal_explicit_wins_over_epochs(self) -> None:
+        """An explicit minimal session_start_time is used as given."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, _FULL_MINIMAL)
+        self.assertEqual(
+            loaded.get_session_start_time(), "2026-10-30T09:00:00+00:00"
+        )
+
+    def test_minimal_falls_back_to_first_epoch(self) -> None:
+        """Without session_start_time, the first epoch's start is used."""
+        loaded = self.load(
+            io.MINIMAL_CORE_FILE,
+            {"epochs": [{"start_time": "e1"}, {"start_time": "e2"}]},
+        )
+        self.assertEqual(loaded.get_session_start_time(), "e1")
+
+    def test_minimal_absent(self) -> None:
+        """No start time and no epochs gives None."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {})
+        self.assertIsNone(loaded.get_session_start_time())
+
+
+class TestSubjectDetails(_CoreFileCase):
+    """Subject details from subject.json or the minimal subject block."""
+
+    def test_minimal(self) -> None:
+        """The minimal document's subject block is read."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, _FULL_MINIMAL)
+        self.assertEqual(
+            loaded.get_subject_details(),
+            {
+                "sex": "Male",
+                "species": "Mus musculus",
+                "date_of_birth": "2026-01-01",
+                "genotype": "wt/wt",
+            },
+        )
+
+    def test_v2_reads_subject_details(self) -> None:
+        """v2 nests the fields under subject_details; species is a dict."""
+        (self.root / io.SUBJECT_FILE).write_text(
+            json.dumps(
+                {
+                    "subject_details": {
+                        "sex": "Female",
+                        "species": {"name": "Mus musculus"},
+                        "date_of_birth": "2026-02-02",
+                        "genotype": "Cre/wt",
+                    }
+                }
+            )
+        )
+        loaded = self.load(io.V2_CORE_FILE, {})
+        self.assertEqual(
+            loaded.get_subject_details(),
+            {
+                "sex": "Female",
+                "species": "Mus musculus",
+                "date_of_birth": "2026-02-02",
+                "genotype": "Cre/wt",
+            },
+        )
+
+    def test_v1_reads_subject_json_flat(self) -> None:
+        """v1 subject.json carries the fields at the top level."""
+        (self.root / io.SUBJECT_FILE).write_text(
+            json.dumps({"sex": "Male", "species": {"name": "Mus musculus"}})
+        )
+        details = self.load(io.V1_CORE_FILE, {}).get_subject_details()
+        self.assertEqual(details["sex"], "Male")
+        self.assertEqual(details["species"], "Mus musculus")
+        self.assertIsNone(details["genotype"])
+
+    def test_absent_everywhere(self) -> None:
+        """No subject information gives all-None values."""
+        details = self.load(io.MINIMAL_CORE_FILE, {}).get_subject_details()
+        self.assertEqual(set(details.values()), {None})
+
+
+class TestInstitution(_CoreFileCase):
+    """The institution name."""
+
+    def test_data_description_wins(self) -> None:
+        """data_description.json's institution is canonical."""
+        (self.root / io.DATA_DESCRIPTION_FILE).write_text(
+            json.dumps({"institution": {"name": "AIND", "abbreviation": "A"}})
+        )
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"institution": "other"})
+        self.assertEqual(loaded.get_institution(), "AIND")
+
+    def test_minimal_fallback(self) -> None:
+        """A minimal document supplies it itself."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"institution": "Kempner"})
+        self.assertEqual(loaded.get_institution(), "Kempner")
+
+    def test_absent(self) -> None:
+        """No institution gives None."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {})
+        self.assertIsNone(loaded.get_institution())
+
+
+class TestCheckNwbRequirements(_CoreFileCase):
+    """The NWB field report."""
+
+    def test_complete_minimal_document(self) -> None:
+        """A complete minimal document misses nothing."""
+        report = self.load(
+            io.MINIMAL_CORE_FILE, _FULL_MINIMAL
+        ).check_nwb_requirements()
+        self.assertEqual(report.missing_required, ())
+        self.assertEqual(report.missing_optional, ())
+
+    def test_empty_minimal_document(self) -> None:
+        """An empty document misses every field, in declaration order."""
+        report = self.load(io.MINIMAL_CORE_FILE, {}).check_nwb_requirements()
+        self.assertEqual(report.missing_required, core.NWB_REQUIRED_FIELDS)
+        self.assertEqual(report.missing_optional, core.NWB_OPTIONAL_FIELDS)
+
+    def test_only_optional_missing_is_ok(self) -> None:
+        """Missing optional fields do not fail the check."""
+        blob = {
+            "frame_rate": 30.0,
+            "planes": [{"plane_index": 0}],
+            "epochs": [{"start_time": "t"}],
+        }
+        report = self.load(io.MINIMAL_CORE_FILE, blob).check_nwb_requirements()
+        self.assertEqual(report.missing_required, ())
+        self.assertIn("sex", report.missing_optional)
+        self.assertIn("subject_id", report.missing_optional)
+
+
+class TestCheckPipelineRequirements(_CoreFileCase):
+    """The full-pipeline field report, for every input version."""
+
+    def test_complete_minimal_document(self) -> None:
+        """A complete minimal document misses nothing."""
+        blob = {**_FULL_MINIMAL, "raw_format": core.RAW_FORMAT_TIFF_STACK}
+        loaded = self.load(io.MINIMAL_CORE_FILE, blob)
+        self.assertEqual(loaded.check_pipeline_requirements(), ())
+
+    def test_empty_minimal_document(self) -> None:
+        """An empty document misses every field, in declaration order."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {})
+        self.assertEqual(
+            loaded.check_pipeline_requirements(),
+            core.PIPELINE_REQUIRED_FIELDS,
+        )
+
+    def test_v2_without_frame_rate(self) -> None:
+        """A v2 document is checked, not skipped."""
+        raw = {
+            **_v2_acquisition(planes=[{}]),
+            "instrument_id": "MESO.2",
+            "acquisition_start_time": "2026-10-30T09:00:00+00:00",
+        }
+        self.assertEqual(
+            _direct(io.SCHEMA_V2, raw).check_pipeline_requirements(),
+            ("frame_rate",),
+        )
+
+
+def _aind_epoch(name: str, stem: Optional[str]) -> dict:
+    """Build a v1/v2 stimulus epoch carrying an optional TIFF stem.
+
+    Parameters
+    ----------
+    name : str
+        Stimulus name.
+    stem : str or None
+        TIFF stem under ``output_parameters``.
+
+    Returns
+    -------
+    dict
+        A raw stimulus epoch dict.
+    """
+    epoch: Dict[str, Any] = {"stimulus_name": name}
+    if stem is not None:
+        epoch["output_parameters"] = {"tiff_stem": stem}
+    return epoch
+
+
+def _epoch_annotations(records: List[Dict[str, Any]]) -> List[tuple]:
+    """Return each record's ``(photostim, reference, label)``.
+
+    Parameters
+    ----------
+    records : list of dict
+        Epoch records.
+
+    Returns
+    -------
+    list of tuple
+        One annotation triple per record.
+    """
+    return [(r["photostim"], r["reference"], r["label"]) for r in records]
+
+
+class TestAindEpochAnnotations(unittest.TestCase):
+    """v1 and v2 annotations reproduce the names the pipeline keyed on."""
+
+    BERGAMO_EPOCHS = [
+        _aind_epoch("spontaneous activity", "spont"),
+        _aind_epoch("single neuron BCI conditioning", "neuron8"),
+        _aind_epoch("2p photostimulation", "slm"),
+        _aind_epoch("single neuron BCI conditioning", "neuron8_again"),
+        _aind_epoch("2p photostimulation", "slmpost"),
+    ]
+
+    def test_bergamo_annotations_match_the_name_conventions(self) -> None:
+        """Photostim by name, first BCI epoch as reference, stem labels."""
+        for version in (io.SCHEMA_V1, io.SCHEMA_V2):
+            with self.subTest(version=version):
+                built = _direct(
+                    version, {"stimulus_epochs": self.BERGAMO_EPOCHS}
+                )
+                self.assertEqual(
+                    _epoch_annotations(built.get_epoch_records()),
+                    [
+                        (False, False, "spont"),
+                        (False, True, "BCI"),
+                        (True, False, "photostim"),
+                        (False, False, "BCI"),
+                        (True, False, "photostim_post"),
+                    ],
+                )
+
+    def test_reference_skips_a_conditioning_epoch_without_a_stem(
+        self,
+    ) -> None:
+        """A stemless epoch has no frames, so the next one is the reference."""
+        built = _direct(
+            io.SCHEMA_V2,
+            {
+                "stimulus_epochs": [
+                    _aind_epoch("single neuron BCI conditioning", None),
+                    _aind_epoch("single neuron BCI conditioning", "n2"),
+                ]
+            },
+        )
+        self.assertEqual(
+            [r["reference"] for r in built.get_epoch_records()],
+            [False, True],
+        )
+
+    def test_stemless_epoch_label_is_its_stimulus_name(self) -> None:
+        """Without a stem the stimulus name is the only label available."""
+        built = _direct(
+            io.SCHEMA_V2, {"stimulus_epochs": [_aind_epoch("spont", None)]}
+        )
+        self.assertEqual(built.get_epoch_records()[0]["label"], "spont")
+
+
+class TestMinimalEpochAnnotations(_CoreFileCase):
+    """A minimal document states its annotations; defaults fill the rest."""
+
+    def _records(self, epochs: List[dict]) -> List[Dict[str, Any]]:
+        """Load a minimal document holding ``epochs``.
+
+        Parameters
+        ----------
+        epochs : list of dict
+            Raw minimal epochs.
+
+        Returns
+        -------
+        list of dict
+            The epoch records.
+        """
+        return self.load(
+            io.MINIMAL_CORE_FILE, {"epochs": epochs}
+        ).get_epoch_records()
+
+    def test_defaults(self) -> None:
+        """No photostim, every epoch a reference, labelled by name."""
+        records = self._records(
+            [
+                {"stimulus_name": "recording", "tiff_stem": "file"},
+                {"stimulus_name": "second", "tiff_stem": "b"},
+            ]
+        )
+        self.assertEqual(
+            _epoch_annotations(records),
+            [(False, True, "recording"), (False, True, "second")],
+        )
+
+    def test_photostim_epochs_are_not_default_references(self) -> None:
+        """A photostim epoch is left out of the default reference set."""
+        records = self._records(
+            [
+                {"stimulus_name": "a", "tiff_stem": "a"},
+                {"stimulus_name": "b", "tiff_stem": "b", "photostim": True},
+            ]
+        )
+        self.assertEqual(
+            _epoch_annotations(records),
+            [(False, True, "a"), (True, False, "b")],
+        )
+
+    def test_stated_reference_turns_off_the_default(self) -> None:
+        """Once any epoch states reference, unstated epochs are not."""
+        records = self._records(
+            [
+                {"stimulus_name": "a", "tiff_stem": "a"},
+                {"stimulus_name": "b", "tiff_stem": "b", "reference": True},
+            ]
+        )
+        self.assertEqual([r["reference"] for r in records], [False, True])
+
+    def test_stated_label(self) -> None:
+        """A stated label is the NWB epoch name."""
+        records = self._records(
+            [{"stimulus_name": "a", "tiff_stem": "a", "label": "BCI"}]
+        )
+        self.assertEqual(records[0]["label"], "BCI")
+
+    def test_non_boolean_flag_raises(self) -> None:
+        """The string "false" would otherwise read as true."""
+        for key in ("photostim", "reference"):
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError) as ctx:
+                    self._records(
+                        [{"stimulus_name": "a", "tiff_stem": "a", key: "no"}]
+                    )
+                self.assertIn(key, str(ctx.exception))
+                self.assertIn(io.MINIMAL_CORE_FILE, str(ctx.exception))
+
+    def test_epochs_without_a_stem_are_not_default_references(self) -> None:
+        """Only epochs with frames join the default reference set."""
+        records = self._records(
+            [{"stimulus_name": "a"}, {"stimulus_name": "b", "tiff_stem": "b"}]
+        )
+        self.assertEqual([r["reference"] for r in records], [False, True])
+
+    def test_invalid_epochs_raise(self) -> None:
+        """Each contradiction or typo fails with a message naming it."""
+        cases = {
+            "photo_stim": [{"stimulus_name": "a", "photo_stim": True}],
+            "label must be": [{"stimulus_name": "a", "label": 5}],
+            "both photostim and reference": [
+                {
+                    "stimulus_name": "a",
+                    "tiff_stem": "a",
+                    "photostim": True,
+                    "reference": True,
+                }
+            ],
+            "no tiff_stem": [{"stimulus_name": "a", "reference": True}],
+            "share tiff_stem": [
+                {"stimulus_name": "a", "tiff_stem": "x"},
+                {"stimulus_name": "b", "tiff_stem": "x"},
+            ],
+        }
+        for expected, epochs in cases.items():
+            with self.subTest(expected=expected):
+                with self.assertRaises(ValueError) as ctx:
+                    self._records(epochs)
+                self.assertIn(expected, str(ctx.exception))
+
+    def test_tiff_stack_without_a_reference_raises(self) -> None:
+        """Motion correction would otherwise fail later with no reference."""
+        loaded = self.load(
+            io.MINIMAL_CORE_FILE,
+            {
+                "raw_format": "tiff_stack",
+                "epochs": [
+                    {"stimulus_name": "a", "tiff_stem": "a", "photostim": True}
+                ],
+            },
+        )
+        with self.assertRaises(ValueError) as ctx:
+            loaded.get_epoch_records()
+        self.assertIn("no reference epoch", str(ctx.exception))
+
+
+class TestRawFormat(_CoreFileCase):
+    """The raw format is stated by a minimal document, else derived."""
+
+    def test_derived_from_aind_instrument_ids(self) -> None:
+        """Bergamo is a TIFF stack and any MESO id a mesoscope."""
+        cases = (
+            (io.SCHEMA_V1, {"rig_id": "Bergamo 2P Photostim"}, "tiff_stack"),
+            (io.SCHEMA_V2, {"instrument_id": "Bergamo_2P"}, "tiff_stack"),
+            (io.SCHEMA_V1, {"rig_id": "MESO.1"}, "mesoscope_aind"),
+            (io.SCHEMA_V2, {"instrument_id": "422_meso2_x"}, "mesoscope_aind"),
+            (io.SCHEMA_V2, {"instrument_id": "2P_rig_3"}, None),
+            (io.SCHEMA_V2, {}, None),
+        )
+        for version, raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    _direct(version, raw).get_raw_format(), expected
+                )
+
+    def test_aind_documents_ignore_a_raw_format_key(self) -> None:
+        """Only a minimal document states the format."""
+        built = _direct(
+            io.SCHEMA_V2, {"instrument_id": "MESO.1", "raw_format": "x"}
+        )
+        self.assertEqual(built.get_raw_format(), core.RAW_FORMAT_MESOSCOPE)
+
+    def test_minimal_stated_wins_over_the_instrument_id(self) -> None:
+        """A stated format routes, whatever the id says."""
+        loaded = self.load(
+            io.MINIMAL_CORE_FILE,
+            {"instrument_id": "MESO.1", "raw_format": "tiff_stack"},
+        )
+        self.assertEqual(loaded.get_raw_format(), core.RAW_FORMAT_TIFF_STACK)
+
+    def test_minimal_falls_back_to_the_instrument_id(self) -> None:
+        """Existing minimal documents with an AIND id keep routing."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"instrument_id": "MESO.1"})
+        self.assertEqual(loaded.get_raw_format(), core.RAW_FORMAT_MESOSCOPE)
+
+    def test_unknown_stated_format_raises(self) -> None:
+        """A typo fails loudly rather than routing to nothing."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"raw_format": "tiffs"})
+        with self.assertRaises(ValueError) as ctx:
+            loaded.get_raw_format()
+        self.assertIn("tiffs", str(ctx.exception))
+
+    def test_required_and_unknown_raises(self) -> None:
+        """The error names the field a collaborator would add."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"instrument_id": "rig"})
+        self.assertIsNone(loaded.get_raw_format())
+        with self.assertRaises(ValueError) as ctx:
+            loaded.get_raw_format(required=True)
+        self.assertIn("raw_format", str(ctx.exception))
+
+
+class TestInstrument(_CoreFileCase):
+    """The microscope is stated by a minimal document, else derived."""
+
+    def test_v1_v2_state_only_the_id(self) -> None:
+        """v1 and v2 report the id, with no manufacturer or description."""
+        for raw in ({"instrument_id": "MESO.2"}, {}):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    _direct(io.SCHEMA_V2, raw).get_instrument(),
+                    {
+                        "name": raw.get("instrument_id"),
+                        "manufacturer": None,
+                        "description": None,
+                    },
+                )
+
+    def test_minimal_block(self) -> None:
+        """Stated values are used as written."""
+        loaded = self.load(
+            io.MINIMAL_CORE_FILE,
+            {
+                "instrument_id": "rig-a",
+                "instrument": {
+                    "name": "Lab scope",
+                    "manufacturer": "Bruker",
+                    "description": "Resonant 2P",
+                },
+            },
+        )
+        self.assertEqual(
+            loaded.get_instrument(),
+            {
+                "name": "Lab scope",
+                "manufacturer": "Bruker",
+                "description": "Resonant 2P",
+            },
+        )
+
+    def test_minimal_defaults(self) -> None:
+        """The name falls back to the id; nothing else is invented."""
+        loaded = self.load(io.MINIMAL_CORE_FILE, {"instrument_id": "rig-a"})
+        self.assertEqual(
+            loaded.get_instrument(),
+            {"name": "rig-a", "manufacturer": None, "description": None},
+        )
 
 
 if __name__ == "__main__":

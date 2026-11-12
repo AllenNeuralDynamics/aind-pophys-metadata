@@ -743,9 +743,7 @@ def _epoch_records(core_raw: dict) -> List[Dict[str, Any]]:
         ``modalities``.
     """
     by_start_time = _tiff_stems_by_start_time(core_raw)
-    epochs = core_raw.get("stimulus_epochs")
-    if epochs is None:
-        epochs = core_raw.get("epochs") or []
+    epochs = _raw_epochs(core_raw)
     records: List[Dict[str, Any]] = []
     for epoch in epochs:
         start_time = epoch.get("stimulus_start_time", epoch.get("start_time"))
@@ -779,6 +777,390 @@ def _epoch_records(core_raw: dict) -> List[Dict[str, Any]]:
             }
         )
     return records
+
+
+def _raw_epochs(core_raw: dict) -> List[dict]:
+    """Return the raw epoch dicts, in the order recorded.
+
+    Parameters
+    ----------
+    core_raw : dict
+        Raw core metadata dict.
+
+    Returns
+    -------
+    list of dict
+        ``stimulus_epochs`` (v1, v2), else ``epochs`` (minimal).
+    """
+    epochs = core_raw.get("stimulus_epochs")
+    if epochs is None:
+        epochs = core_raw.get("epochs") or []
+    return list(epochs)
+
+
+# ---------------------------------------------------------------------------
+# Raw format, instrument and epoch annotations
+# ---------------------------------------------------------------------------
+
+#: One plane recorded as TIFF files, grouped into epochs by file stem.
+RAW_FORMAT_TIFF_STACK = "tiff_stack"
+#: The AIND mesoscope layout: ``*platform.json``, ``*timeseries.tiff``, ...
+RAW_FORMAT_MESOSCOPE = "mesoscope_aind"
+#: Every raw format the pipeline converts.
+RAW_FORMATS = (RAW_FORMAT_TIFF_STACK, RAW_FORMAT_MESOSCOPE)
+
+# AIND conventions these are derived from for v1 and v2 documents.
+_AIND_TIFF_STACK_RIG = "Bergamo"
+_AIND_MESOSCOPE_RIG = "MESO"
+_AIND_PHOTOSTIM_STIMULUS = "2p photostimulation"
+_AIND_REFERENCE_STIMULUS = "single neuron BCI conditioning"
+
+
+def _raw_format_from_instrument_id(
+    instrument_id: Optional[str],
+) -> Optional[str]:
+    """Derive the raw format from an AIND instrument id.
+
+    Parameters
+    ----------
+    instrument_id : str or None
+        v1 ``rig_id`` or v2 ``instrument_id``.
+
+    Returns
+    -------
+    str or None
+        ``tiff_stack`` for a Bergamo rig, ``mesoscope_aind`` for a mesoscope,
+        ``None`` otherwise.
+    """
+    if not instrument_id:
+        return None
+    if _AIND_TIFF_STACK_RIG in instrument_id:
+        return RAW_FORMAT_TIFF_STACK
+    if _AIND_MESOSCOPE_RIG in instrument_id.upper():
+        return RAW_FORMAT_MESOSCOPE
+    return None
+
+
+def _aind_epoch_label(
+    tiff_stem: Optional[str], stimulus_name: Optional[str]
+) -> Optional[str]:
+    """Name an AIND epoch from its Bergamo TIFF stem.
+
+    Parameters
+    ----------
+    tiff_stem : str or None
+        The epoch's TIFF stem.
+    stimulus_name : str or None
+        The epoch's stimulus name, used when it has no stem.
+
+    Returns
+    -------
+    str or None
+        ``BCI``, ``photostim`` or ``photostim_post`` for the stems the
+        Bergamo rig writes; the stem itself otherwise.
+    """
+    if not tiff_stem:
+        return stimulus_name
+    if "slm" in tiff_stem:
+        return "photostim_post" if "post" in tiff_stem else "photostim"
+    if "neuron" in tiff_stem:
+        return "BCI"
+    return tiff_stem
+
+
+def _with_aind_epoch_annotations(
+    records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Add epoch annotations derived from AIND stimulus names.
+
+    The reference is the first conditioning epoch carrying a TIFF stem.
+
+    Parameters
+    ----------
+    records : list of dict
+        Records from :func:`_epoch_records`.
+
+    Returns
+    -------
+    list of dict
+        The records with ``photostim``, ``reference`` and ``label`` added.
+    """
+    reference_found = False
+    out: List[Dict[str, Any]] = []
+    for record in records:
+        name = record["stimulus_name"]
+        is_reference = (
+            not reference_found
+            and name == _AIND_REFERENCE_STIMULUS
+            and bool(record["tiff_stem"])
+        )
+        reference_found = reference_found or is_reference
+        out.append(
+            {
+                **record,
+                "photostim": name == _AIND_PHOTOSTIM_STIMULUS,
+                "reference": is_reference,
+                "label": _aind_epoch_label(record["tiff_stem"], name),
+            }
+        )
+    return out
+
+
+def _stated_flag(epoch: dict, key: str, default: bool, path: Path) -> bool:
+    """Read a boolean epoch flag, refusing anything but a JSON boolean.
+
+    Parameters
+    ----------
+    epoch : dict
+        Raw minimal epoch dict.
+    key : str
+        The flag name.
+    default : bool
+        Value when the flag is absent.
+    path : Path
+        Core file, named in the error.
+
+    Returns
+    -------
+    bool
+        The flag.
+
+    Raises
+    ------
+    ValueError
+        If the flag is present and not a boolean.
+    """
+    value = epoch.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"Epoch {epoch.get('stimulus_name')!r} in {path.name}: {key} "
+            f"must be true or false, got {value!r}."
+        )
+    return value
+
+
+#: Keys a minimal epoch may carry; anything else is rejected as a typo.
+_MINIMAL_EPOCH_KEYS = frozenset(
+    {
+        "stimulus_name",
+        "start_time",
+        "tiff_stem",
+        "modalities",
+        "photostim",
+        "reference",
+        "label",
+    }
+)
+
+
+def _check_minimal_epoch(epoch: dict, path: Path) -> None:
+    """Reject unknown keys and a non-string label in one minimal epoch.
+
+    Parameters
+    ----------
+    epoch : dict
+        Raw minimal epoch dict.
+    path : Path
+        Core file, named in the error.
+
+    Raises
+    ------
+    ValueError
+        If the epoch carries an unknown key or a label that is not a
+        non-empty string.
+    """
+    name = epoch.get("stimulus_name")
+    unknown = sorted(set(epoch) - _MINIMAL_EPOCH_KEYS)
+    if unknown:
+        raise ValueError(
+            f"Epoch {name!r} in {path.name} has unknown keys {unknown}; "
+            f"allowed keys are {sorted(_MINIMAL_EPOCH_KEYS)}."
+        )
+    label = epoch.get("label")
+    if "label" in epoch and not (isinstance(label, str) and label):
+        raise ValueError(
+            f"Epoch {name!r} in {path.name}: label must be a non-empty "
+            f"string, got {label!r}."
+        )
+
+
+def _check_minimal_epoch_set(
+    records: List[Dict[str, Any]], raw_format: Optional[str], path: Path
+) -> None:
+    """Reject annotations that contradict each other across minimal epochs.
+
+    Parameters
+    ----------
+    records : list of dict
+        Annotated epoch records.
+    raw_format : str or None
+        The document's raw format.
+    path : Path
+        Core file, named in errors.
+
+    Raises
+    ------
+    ValueError
+        If an epoch is both photostim and reference, a reference epoch has no
+        TIFF stem, two epochs share a TIFF stem, or a ``tiff_stack`` document
+        has no reference epoch.
+    """
+    for r in records:
+        if r["photostim"] and r["reference"]:
+            raise ValueError(
+                f"Epoch {r['stimulus_name']!r} in {path.name} is both "
+                "photostim and reference."
+            )
+        if r["reference"] and not r["tiff_stem"]:
+            raise ValueError(
+                f"Reference epoch {r['stimulus_name']!r} in {path.name} has "
+                "no tiff_stem."
+            )
+    stems = [r["tiff_stem"] for r in records if r["tiff_stem"]]
+    duplicates = sorted({s for s in stems if stems.count(s) > 1})
+    if duplicates:
+        raise ValueError(
+            f"Epochs in {path.name} share tiff_stem values {duplicates}."
+        )
+    if raw_format == RAW_FORMAT_TIFF_STACK and not any(
+        r["reference"] for r in records
+    ):
+        raise ValueError(
+            f"{path.name} is a tiff_stack document with no reference epoch."
+        )
+
+
+def _with_minimal_epoch_annotations(
+    records: List[Dict[str, Any]],
+    raw_epochs: List[dict],
+    raw_format: Optional[str],
+    path: Path,
+) -> List[Dict[str, Any]]:
+    """Add the epoch annotations a minimal document states, with defaults.
+
+    ``photostim`` defaults to false and ``label`` to the stimulus name. When
+    no epoch states ``reference``, every non-photostim epoch with a TIFF stem
+    is a reference epoch.
+
+    Parameters
+    ----------
+    records : list of dict
+        Records from :func:`_epoch_records`.
+    raw_epochs : list of dict
+        The raw epochs, aligned with ``records``.
+    raw_format : str or None
+        The document's raw format.
+    path : Path
+        Core file, named in errors.
+
+    Returns
+    -------
+    list of dict
+        The records with ``photostim``, ``reference`` and ``label`` added.
+
+    Raises
+    ------
+    ValueError
+        If an epoch or the set of epochs fails :func:`_check_minimal_epoch`
+        or :func:`_check_minimal_epoch_set`.
+    """
+    reference_stated = any("reference" in e for e in raw_epochs)
+    out: List[Dict[str, Any]] = []
+    for record, epoch in zip(records, raw_epochs):
+        _check_minimal_epoch(epoch, path)
+        photostim = _stated_flag(epoch, "photostim", False, path)
+        reference = _stated_flag(
+            epoch,
+            "reference",
+            not photostim
+            and not reference_stated
+            and bool(record["tiff_stem"]),
+            path,
+        )
+        out.append(
+            {
+                **record,
+                "photostim": photostim,
+                "reference": reference,
+                "label": epoch.get("label") or record["stimulus_name"],
+            }
+        )
+    _check_minimal_epoch_set(out, raw_format, path)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Session and subject fields
+# ---------------------------------------------------------------------------
+
+#: Fields an NWB file cannot be written without.
+NWB_REQUIRED_FIELDS = ("frame_rate", "session_start_time", "planes")
+#: Fields the full pipeline cannot run without.
+PIPELINE_REQUIRED_FIELDS = NWB_REQUIRED_FIELDS + ("raw_format",)
+#: Fields an NWB file records when present and omits otherwise.
+NWB_OPTIONAL_FIELDS = (
+    "subject_id",
+    "dataset_name",
+    "institution",
+    "sex",
+    "species",
+    "date_of_birth",
+    "genotype",
+)
+_SUBJECT_DETAIL_KEYS = ("sex", "species", "date_of_birth", "genotype")
+
+
+def _name_of(value: Any) -> Optional[str]:
+    """Return a value's name, whether it is a bare string or a named dict.
+
+    Parameters
+    ----------
+    value : Any
+        A string, a dict with a ``name`` key, or ``None``.
+
+    Returns
+    -------
+    str or None
+        The name, or ``None`` when absent.
+    """
+    if isinstance(value, dict):
+        value = value.get("name")
+    return None if value is None else str(value)
+
+
+def _subject_details(node: Optional[dict]) -> Dict[str, Optional[str]]:
+    """Read the subject detail fields from one dict.
+
+    Parameters
+    ----------
+    node : dict or None
+        The dict holding ``sex``, ``species``, ``date_of_birth`` and
+        ``genotype``: a v1 ``subject.json``, the ``subject_details`` of a v2
+        one, or the ``subject`` block of a minimal document.
+
+    Returns
+    -------
+    dict
+        One entry per key in ``_SUBJECT_DETAIL_KEYS``; ``None`` when absent.
+    """
+    node = node or {}
+    return {key: _name_of(node.get(key)) for key in _SUBJECT_DETAIL_KEYS}
+
+
+@dataclass(frozen=True)
+class NwbRequirements:
+    """Which NWB fields an input document is missing.
+
+    Attributes
+    ----------
+    missing_required : tuple of str
+        Entries of ``NWB_REQUIRED_FIELDS`` the document does not supply.
+    missing_optional : tuple of str
+        Entries of ``NWB_OPTIONAL_FIELDS`` the document does not supply.
+    """
+
+    missing_required: Tuple[str, ...]
+    missing_optional: Tuple[str, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -1077,13 +1459,204 @@ class CoreMetadata:
     def get_epoch_records(self) -> List[Dict[str, Any]]:
         """Stimulus epochs as plain dicts, in the order recorded.
 
-        No version branch, because no version needs one -- see
-        :func:`_epoch_records`.
+        A minimal document states each epoch's annotations; v1 and v2
+        annotations are derived from AIND stimulus names and TIFF stems.
 
         Returns
         -------
         list of dict
             One record per epoch, keyed ``stimulus_name``, ``start_time``,
-            ``tiff_stem`` and ``modalities``.
+            ``tiff_stem``, ``modalities``, ``photostim`` (photostimulation,
+            left out of segmentation), ``reference`` (frames that form the
+            registration reference) and ``label`` (the NWB epoch name).
+
+        Raises
+        ------
+        ValueError
+            If a minimal document's epochs are invalid: an unknown key, a
+            ``photostim`` or ``reference`` that is not a boolean, a label that
+            is not a non-empty string, an epoch both photostim and reference,
+            a reference epoch with no TIFF stem, a shared TIFF stem, or a
+            ``tiff_stack`` document with no reference epoch.
         """
-        return _epoch_records(self.core_raw)
+        records = _epoch_records(self.core_raw)
+        if self.version is SchemaVersion.MINIMAL:
+            return _with_minimal_epoch_annotations(
+                records,
+                _raw_epochs(self.core_raw),
+                self.get_raw_format(),
+                self.core_path,
+            )
+        return _with_aind_epoch_annotations(records)
+
+    def get_raw_format(self, *, required: bool = False) -> Optional[str]:
+        """The raw movie layout, one of :data:`RAW_FORMATS`.
+
+        A minimal document states ``raw_format``; otherwise it is derived from
+        the AIND instrument id.
+
+        Parameters
+        ----------
+        required : bool, optional
+            Raise when no format is stated or derivable instead of returning
+            ``None``.
+
+        Returns
+        -------
+        str or None
+            The raw format, or ``None`` when unknown and not ``required``.
+
+        Raises
+        ------
+        ValueError
+            If a stated format is not in :data:`RAW_FORMATS`, or if
+            ``required`` and none is known.
+        """
+        stated = None
+        if self.version is SchemaVersion.MINIMAL:
+            stated = self.core_raw.get("raw_format")
+        if stated is not None and stated not in RAW_FORMATS:
+            raise ValueError(
+                f"raw_format {stated!r} in {self.core_path.name} is not one "
+                f"of {RAW_FORMATS}."
+            )
+        instrument_id = self.get_instrument_id()
+        value = stated or _raw_format_from_instrument_id(instrument_id)
+        if value is None and required:
+            v1 = self.version is SchemaVersion.V1
+            key = "rig_id" if v1 else "instrument_id"
+            raise ValueError(
+                f"{self.core_path.name} states no raw_format and its {key} "
+                f"{instrument_id!r} names no known AIND rig. A metadata.json "
+                f"states one of {RAW_FORMATS}."
+            )
+        return value
+
+    def get_instrument(self) -> Dict[str, Optional[str]]:
+        """The microscope's name, manufacturer and description.
+
+        A minimal document states these in an optional ``instrument`` block,
+        whose ``name`` defaults to ``instrument_id``. v1 and v2 documents
+        carry only the instrument id, so their manufacturer and description
+        are ``None``.
+
+        Returns
+        -------
+        dict
+            Keyed ``name``, ``manufacturer`` and ``description``; each value
+            is ``None`` when unknown.
+        """
+        instrument_id = self.get_instrument_id()
+        if self.version is SchemaVersion.MINIMAL:
+            block = self.core_raw.get("instrument") or {}
+            return {
+                "name": _name_of(block.get("name")) or instrument_id,
+                "manufacturer": _name_of(block.get("manufacturer")),
+                "description": _name_of(block.get("description")),
+            }
+        return {
+            "name": instrument_id,
+            "manufacturer": None,
+            "description": None,
+        }
+
+    def get_session_start_time(self) -> Optional[str]:
+        """Session start time as recorded, an ISO 8601 string.
+
+        A minimal document without ``session_start_time`` uses the start time
+        of its first epoch.
+
+        Returns
+        -------
+        str or None
+            The start time, or ``None`` when no source provides one.
+        """
+        if self.version is SchemaVersion.V1:
+            value = self.core_raw.get("session_start_time")
+        elif self.version is SchemaVersion.V2:
+            value = self.core_raw.get("acquisition_start_time")
+        else:
+            value = self.core_raw.get("session_start_time")
+            if value is None:
+                epochs = self.get_epoch_records()
+                value = epochs[0]["start_time"] if epochs else None
+        return None if value is None else str(value)
+
+    def get_subject_details(self) -> Dict[str, Optional[str]]:
+        """Subject sex, species, date of birth and genotype.
+
+        Read from ``subject.json`` for v1 and v2, and from the ``subject``
+        block of a minimal document.
+
+        Returns
+        -------
+        dict
+            Keyed ``sex``, ``species``, ``date_of_birth`` and ``genotype``;
+            each value is ``None`` when absent.
+        """
+        if self.version is SchemaVersion.MINIMAL:
+            return _subject_details(self.core_raw.get("subject"))
+        if self.version is SchemaVersion.V2:
+            return _subject_details(
+                (self.subject_raw or {}).get("subject_details")
+            )
+        return _subject_details(self.subject_raw)
+
+    def get_institution(self) -> Optional[str]:
+        """Institution name.
+
+        Read from ``data_description.json``, falling back to an
+        ``institution`` key on the core dict, which is how a minimal document
+        supplies it.
+
+        Returns
+        -------
+        str or None
+            The institution name, or ``None`` when no source provides one.
+        """
+        value = (self.data_description_raw or {}).get("institution")
+        if value is None:
+            value = self.core_raw.get("institution")
+        return _name_of(value)
+
+    def check_pipeline_requirements(self) -> Tuple[str, ...]:
+        """Report which fields the full pipeline needs that are missing.
+
+        Applies to every input version.
+
+        Returns
+        -------
+        tuple of str
+            Entries of ``PIPELINE_REQUIRED_FIELDS`` this document does not
+            supply, in declaration order.
+        """
+        missing = set(self.check_nwb_requirements().missing_required)
+        if self.get_raw_format() is None:
+            missing.add("raw_format")
+        return tuple(f for f in PIPELINE_REQUIRED_FIELDS if f in missing)
+
+    def check_nwb_requirements(self) -> NwbRequirements:
+        """Report which NWB fields this document does not supply.
+
+        Returns
+        -------
+        NwbRequirements
+            The missing required and optional fields, in declaration order.
+        """
+        present = {
+            "frame_rate": self.get_frame_rate(required=False),
+            "session_start_time": self.get_session_start_time(),
+            "planes": self.get_plane_records() or None,
+            "subject_id": self.get_subject_id(),
+            "dataset_name": self.get_dataset_name(),
+            "institution": self.get_institution(),
+            **self.get_subject_details(),
+        }
+        return NwbRequirements(
+            missing_required=tuple(
+                f for f in NWB_REQUIRED_FIELDS if present[f] is None
+            ),
+            missing_optional=tuple(
+                f for f in NWB_OPTIONAL_FIELDS if present[f] is None
+            ),
+        )

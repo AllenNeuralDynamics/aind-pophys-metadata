@@ -2,7 +2,14 @@
 
 from aind_pophys_metadata.core import (
     DEFAULT_LENGTH_UNIT,
+    NWB_OPTIONAL_FIELDS,
+    NWB_REQUIRED_FIELDS,
+    PIPELINE_REQUIRED_FIELDS,
+    RAW_FORMAT_MESOSCOPE,
+    RAW_FORMAT_TIFF_STACK,
+    RAW_FORMATS,
     CoreMetadata,
+    NwbRequirements,
 )
 from aind_pophys_metadata.io import (
     DATA_DESCRIPTION_FILE,
@@ -72,6 +79,13 @@ __all__ = [
     # core
     "CoreMetadata",
     "DEFAULT_LENGTH_UNIT",
+    "NWB_OPTIONAL_FIELDS",
+    "NWB_REQUIRED_FIELDS",
+    "PIPELINE_REQUIRED_FIELDS",
+    "NwbRequirements",
+    "RAW_FORMATS",
+    "RAW_FORMAT_MESOSCOPE",
+    "RAW_FORMAT_TIFF_STACK",
     # io
     "DATA_DESCRIPTION_FILE",
     "MINIMAL_CORE_FILE",
