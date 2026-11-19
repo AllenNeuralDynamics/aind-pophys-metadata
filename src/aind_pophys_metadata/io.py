@@ -143,11 +143,12 @@ def find_one(
 
 
 def _absolute(path: Path) -> Path:
-    """Return ``path`` made absolute, following a symlink only before ``..``.
+    """Return ``path`` made absolute, resolving only symlinks ``..`` exits.
 
     ``os.path.abspath`` drops ``link/..`` as written, which names the wrong
-    directory when ``link`` points elsewhere. Resolving the prefix at each
-    ``..`` keeps that step correct while every other symlink stays as named.
+    directory when ``link`` points elsewhere. A ``..`` that exits a symlink
+    steps to the parent of the link's target; any other ``..`` drops the last
+    part as written, so every other symlink stays as named.
 
     Parameters
     ----------
@@ -157,15 +158,17 @@ def _absolute(path: Path) -> Path:
     Returns
     -------
     pathlib.Path
-        Absolute path whose only resolved parts precede a ``..``.
+        Absolute path, resolved only where a ``..`` exits a symlink.
     """
     full = Path.cwd() / path
     absolute = Path(full.anchor)
     for part in full.parts[1:]:
-        if part == "..":
+        if part != "..":
+            absolute = absolute / part
+        elif absolute.is_symlink():
             absolute = absolute.resolve().parent
         else:
-            absolute = absolute / part
+            absolute = absolute.parent
     return absolute
 
 
@@ -173,7 +176,7 @@ def relative_to_root(root: Path, path: Path) -> str:
     """Return ``path`` relative to ``root``, as a string.
 
     The paths are compared as written first, made absolute without following
-    symlinks other than those a ``..`` steps out of. A Nextflow task stages
+    symlinks other than those a ``..`` exits. A Nextflow task stages
     its inputs as symlinks into other tasks' work directories, so resolving a
     staged file first would place it outside the task's data root and record
     the work directory path instead of the file's name. When that fails, both

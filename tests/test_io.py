@@ -435,6 +435,25 @@ class TestRelativeToRoot(unittest.TestCase):
                 str((target.parent / "x.h5").resolve()),
             )
 
+    def test_parent_step_out_of_ordinary_directory_keeps_link(self) -> None:
+        """``..`` out of a real directory leaves an earlier symlink as named.
+
+        With ``data/plane_0`` staged as a symlink, ``extraction/..`` inside it
+        still names ``plane_0``, so the record stays relative to ``data``.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            upstream = Path(tmp) / "work" / "plane_0"
+            (upstream / "extraction").mkdir(parents=True)
+            data = Path(tmp) / "data"
+            data.mkdir()
+            (data / "plane_0").symlink_to(upstream)
+            self.assertEqual(
+                io.relative_to_root(
+                    data, data / "plane_0" / "extraction" / ".." / "x.h5"
+                ),
+                str(Path("plane_0") / "x.h5"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
