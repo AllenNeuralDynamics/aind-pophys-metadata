@@ -145,7 +145,9 @@ def find_one(
     return match
 
 
-def _absolute(path: Path) -> Path:
+def _absolute(
+    path: Path, expansion_budget: Optional[List[int]] = None
+) -> Path:
     """Return ``path`` made absolute, expanding only symlinks ``..`` exits.
 
     ``os.path.abspath`` drops ``link/..`` as written, which names the wrong
@@ -162,22 +164,28 @@ def _absolute(path: Path) -> Path:
     -------
     pathlib.Path
         Absolute path, expanded only where a ``..`` exits a symlink.
+
+    Notes
+    -----
+    Nested symlink targets share one expansion budget to bound cycles.
     """
+    if expansion_budget is None:
+        expansion_budget = [MAX_SYMLINK_EXPANSIONS]
     full = Path.cwd() / path
     absolute = Path(full.anchor)
     for part in full.parts[1:]:
         if part == "..":
-            absolute = _expand_symlink(absolute).parent
+            absolute = _expand_symlink(absolute, expansion_budget).parent
         else:
             absolute = absolute / part
     return absolute
 
 
-def _expand_symlink(path: Path) -> Path:
+def _expand_symlink(path: Path, expansion_budget: List[int]) -> Path:
     """Replace a symlink at the end of ``path`` with its target.
 
     A relative target is joined to the link's parent as written, so symlinks
-    earlier in ``path`` stay as named. Expansion stops after
+    earlier in ``path`` stay as named. Nested targets share the same limit of
     ``MAX_SYMLINK_EXPANSIONS`` links, which ends a symlink cycle.
 
     Parameters
@@ -190,10 +198,9 @@ def _expand_symlink(path: Path) -> Path:
     pathlib.Path
         ``path`` with its trailing symlinks expanded.
     """
-    for _ in range(MAX_SYMLINK_EXPANSIONS):
-        if not path.is_symlink():
-            break
-        path = _absolute(path.parent / os.readlink(path))
+    while expansion_budget[0] and path.is_symlink():
+        expansion_budget[0] -= 1
+        path = _absolute(path.parent / os.readlink(path), expansion_budget)
     return path
 
 

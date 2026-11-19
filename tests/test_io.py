@@ -480,6 +480,15 @@ class TestRelativeToRoot(unittest.TestCase):
                 io.relative_to_root(root, root / "a" / ".." / "x.h5"), str
             )
 
+    def test_symlink_loop_with_parent_target_does_not_recurse(self) -> None:
+        """A cycle whose target contains ``..`` shares the expansion limit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a").symlink_to("a/../target")
+            self.assertIsInstance(
+                io.relative_to_root(root, root / "a" / ".." / "x.h5"), str
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
