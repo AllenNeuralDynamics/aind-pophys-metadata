@@ -394,5 +394,6 @@ class TestRelativeToRoot(unittest.TestCase):
                 str(Path("plane_0") / "extraction" / "x.h5"),
             )
 
+
 if __name__ == "__main__":
     unittest.main()
