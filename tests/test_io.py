@@ -374,6 +374,25 @@ class TestRelativeToRoot(unittest.TestCase):
                 io.relative_to_root(link, real / "plane_0"), "plane_0"
             )
 
+    def test_symlinked_entry_under_root_stays_relative(self) -> None:
+        """A staged input symlinked from elsewhere renders by its name.
+
+        Nextflow stages a task's inputs as symlinks into other tasks' work
+        directories; the record names the file under the data root, not the
+        work directory it points into.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            upstream = Path(tmp) / "work" / "ab" / "plane_0"
+            (upstream / "extraction").mkdir(parents=True)
+            data = Path(tmp) / "task" / "data"
+            data.mkdir(parents=True)
+            (data / "plane_0").symlink_to(upstream)
+            self.assertEqual(
+                io.relative_to_root(
+                    data, data / "plane_0" / "extraction" / "x.h5"
+                ),
+                str(Path("plane_0") / "extraction" / "x.h5"),
+            )
 
 if __name__ == "__main__":
     unittest.main()

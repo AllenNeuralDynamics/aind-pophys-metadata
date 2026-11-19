@@ -145,11 +145,13 @@ def find_one(
 def relative_to_root(root: Path, path: Path) -> str:
     """Return ``path`` relative to ``root``, as a string.
 
-    Both sides are resolved first. Inside the pipeline ``/results`` and
-    ``/data`` are symlinks into the task work directory, so comparing a
-    resolved root against an unresolved path raises ``ValueError`` and leaks
-    an absolute container path (e.g. ``/results/VISp_0/dff``) into the
-    metadata.
+    The paths are compared as written first, made absolute without following
+    symlinks. A Nextflow task stages its inputs as symlinks into other tasks'
+    work directories, so resolving a staged file first would place it outside
+    the task's data root and record the work directory path instead of the
+    file's name. When that fails, both sides are resolved: inside the pipeline
+    ``/results`` and ``/data`` can themselves be symlinks into the task work
+    directory.
 
     Parameters
     ----------
@@ -165,6 +167,11 @@ def relative_to_root(root: Path, path: Path) -> str:
         it is genuinely outside ``root`` (so provenance is never dropped
         entirely).
     """
+    absolute = Path(os.path.abspath(path))
+    try:
+        return str(absolute.relative_to(os.path.abspath(root)))
+    except ValueError:
+        pass
     resolved = Path(path).resolve()
     try:
         return str(resolved.relative_to(Path(root).resolve()))
