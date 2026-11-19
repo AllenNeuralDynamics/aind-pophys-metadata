@@ -159,15 +159,15 @@ def _absolute(
     ----------
     path : pathlib.Path
         Path to make absolute.
+    expansion_budget : list of int, optional
+        One-element counter of symlink expansions left, shared with nested
+        calls so a cycle through ``..`` targets stays bounded. A new
+        ``MAX_SYMLINK_EXPANSIONS`` budget is used when omitted.
 
     Returns
     -------
     pathlib.Path
         Absolute path, expanded only where a ``..`` exits a symlink.
-
-    Notes
-    -----
-    Nested symlink targets share one expansion budget to bound cycles.
     """
     if expansion_budget is None:
         expansion_budget = [MAX_SYMLINK_EXPANSIONS]
@@ -192,6 +192,8 @@ def _expand_symlink(path: Path, expansion_budget: List[int]) -> Path:
     ----------
     path : pathlib.Path
         Absolute path whose last part may be a symlink.
+    expansion_budget : list of int
+        One-element counter of symlink expansions left; decremented in place.
 
     Returns
     -------
