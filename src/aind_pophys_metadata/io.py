@@ -142,16 +142,43 @@ def find_one(
     return match
 
 
+def _absolute(path: Path) -> Path:
+    """Return ``path`` made absolute, following a symlink only before ``..``.
+
+    ``os.path.abspath`` drops ``link/..`` as written, which names the wrong
+    directory when ``link`` points elsewhere. Resolving the prefix at each
+    ``..`` keeps that step correct while every other symlink stays as named.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Path to make absolute.
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path whose only resolved parts precede a ``..``.
+    """
+    full = Path.cwd() / path
+    absolute = Path(full.anchor)
+    for part in full.parts[1:]:
+        if part == "..":
+            absolute = absolute.resolve().parent
+        else:
+            absolute = absolute / part
+    return absolute
+
+
 def relative_to_root(root: Path, path: Path) -> str:
     """Return ``path`` relative to ``root``, as a string.
 
     The paths are compared as written first, made absolute without following
-    symlinks. A Nextflow task stages its inputs as symlinks into other tasks'
-    work directories, so resolving a staged file first would place it outside
-    the task's data root and record the work directory path instead of the
-    file's name. When that fails, both sides are resolved: inside the pipeline
-    ``/results`` and ``/data`` can themselves be symlinks into the task work
-    directory.
+    symlinks other than those a ``..`` steps out of. A Nextflow task stages
+    its inputs as symlinks into other tasks' work directories, so resolving a
+    staged file first would place it outside the task's data root and record
+    the work directory path instead of the file's name. When that fails, both
+    sides are resolved: inside the pipeline ``/results`` and ``/data`` can
+    themselves be symlinks into the task work directory.
 
     Parameters
     ----------
@@ -167,12 +194,10 @@ def relative_to_root(root: Path, path: Path) -> str:
         it is genuinely outside ``root`` (so provenance is never dropped
         entirely).
     """
-    if ".." not in Path(path).parts and ".." not in Path(root).parts:
-        absolute = Path(os.path.abspath(path))
-        try:
-            return str(absolute.relative_to(os.path.abspath(root)))
-        except ValueError:
-            pass
+    try:
+        return str(_absolute(path).relative_to(_absolute(root)))
+    except ValueError:
+        pass
     resolved = Path(path).resolve()
     try:
         return str(resolved.relative_to(Path(root).resolve()))

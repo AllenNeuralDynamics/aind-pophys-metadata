@@ -1,6 +1,7 @@
 """Tests for aind_pophys_metadata.io."""
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -392,6 +393,46 @@ class TestRelativeToRoot(unittest.TestCase):
                     data, data / "plane_0" / "extraction" / "x.h5"
                 ),
                 str(Path("plane_0") / "extraction" / "x.h5"),
+            )
+
+    def test_task_relative_root_with_staged_symlink(self) -> None:
+        """A ``../data`` root, as a pipeline step receives it, stays relative.
+
+        The step runs from ``code/`` beside ``data/`` and globs its inputs
+        under ``../data``, so both arguments start with ``..``.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            upstream = Path(tmp) / "work" / "ab" / "plane_0"
+            (upstream / "extraction").mkdir(parents=True)
+            task = Path(tmp) / "task"
+            (task / "code").mkdir(parents=True)
+            (task / "data").mkdir()
+            (task / "data" / "plane_0").symlink_to(upstream)
+            self.addCleanup(os.chdir, os.getcwd())
+            os.chdir(task / "code")
+            self.assertEqual(
+                io.relative_to_root(
+                    Path("../data"),
+                    Path("../data/plane_0/extraction/x.h5"),
+                ),
+                str(Path("plane_0") / "extraction" / "x.h5"),
+            )
+
+    def test_parent_step_after_symlink_follows_the_link(self) -> None:
+        """``..`` after a symlink names the link target's parent.
+
+        ``data/stage/../x.h5`` with ``stage`` pointing into another directory
+        is a file beside that target, not ``data/x.h5``.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "work" / "plane_0"
+            target.mkdir(parents=True)
+            data = Path(tmp) / "data"
+            data.mkdir()
+            (data / "stage").symlink_to(target)
+            self.assertEqual(
+                io.relative_to_root(data, data / "stage" / ".." / "x.h5"),
+                str((target.parent / "x.h5").resolve()),
             )
 
 
