@@ -454,6 +454,32 @@ class TestRelativeToRoot(unittest.TestCase):
                 str(Path("plane_0") / "x.h5"),
             )
 
+    def test_exited_link_keeps_earlier_staged_link(self) -> None:
+        """Exiting a nested symlink leaves the staged symlink before it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            upstream = Path(tmp) / "work" / "plane_0"
+            (upstream / "real_extraction").mkdir(parents=True)
+            (upstream / "extraction").symlink_to("real_extraction")
+            data = Path(tmp) / "data"
+            data.mkdir()
+            (data / "plane_0").symlink_to(upstream)
+            self.assertEqual(
+                io.relative_to_root(
+                    data, data / "plane_0" / "extraction" / ".." / "x.h5"
+                ),
+                str(Path("plane_0") / "x.h5"),
+            )
+
+    def test_symlink_loop_does_not_hang(self) -> None:
+        """A symlink cycle ends after a bounded number of expansions."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a").symlink_to("b")
+            (root / "b").symlink_to("a")
+            self.assertIsInstance(
+                io.relative_to_root(root, root / "a" / ".." / "x.h5"), str
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

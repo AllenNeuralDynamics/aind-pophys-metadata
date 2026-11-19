@@ -32,6 +32,9 @@ V1_CORE_FILE = "session.json"
 V2_CORE_FILE = "acquisition.json"
 MINIMAL_CORE_FILE = "metadata.json"
 
+# Matches the kernel's limit before it reports a symlink loop.
+MAX_SYMLINK_EXPANSIONS = 40
+
 # Ordered so the richest available document wins when more than one is present.
 _CORE_FILE_VERSIONS = (
     (V2_CORE_FILE, SCHEMA_V2),
@@ -143,7 +146,7 @@ def find_one(
 
 
 def _absolute(path: Path) -> Path:
-    """Return ``path`` made absolute, resolving only symlinks ``..`` exits.
+    """Return ``path`` made absolute, expanding only symlinks ``..`` exits.
 
     ``os.path.abspath`` drops ``link/..`` as written, which names the wrong
     directory when ``link`` points elsewhere. A ``..`` that exits a symlink
@@ -158,18 +161,40 @@ def _absolute(path: Path) -> Path:
     Returns
     -------
     pathlib.Path
-        Absolute path, resolved only where a ``..`` exits a symlink.
+        Absolute path, expanded only where a ``..`` exits a symlink.
     """
     full = Path.cwd() / path
     absolute = Path(full.anchor)
     for part in full.parts[1:]:
-        if part != "..":
-            absolute = absolute / part
-        elif absolute.is_symlink():
-            absolute = absolute.resolve().parent
+        if part == "..":
+            absolute = _expand_symlink(absolute).parent
         else:
-            absolute = absolute.parent
+            absolute = absolute / part
     return absolute
+
+
+def _expand_symlink(path: Path) -> Path:
+    """Replace a symlink at the end of ``path`` with its target.
+
+    A relative target is joined to the link's parent as written, so symlinks
+    earlier in ``path`` stay as named. Expansion stops after
+    ``MAX_SYMLINK_EXPANSIONS`` links, which ends a symlink cycle.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Absolute path whose last part may be a symlink.
+
+    Returns
+    -------
+    pathlib.Path
+        ``path`` with its trailing symlinks expanded.
+    """
+    for _ in range(MAX_SYMLINK_EXPANSIONS):
+        if not path.is_symlink():
+            break
+        path = _absolute(path.parent / os.readlink(path))
+    return path
 
 
 def relative_to_root(root: Path, path: Path) -> str:
