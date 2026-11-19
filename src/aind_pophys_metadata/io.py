@@ -167,11 +167,12 @@ def relative_to_root(root: Path, path: Path) -> str:
         it is genuinely outside ``root`` (so provenance is never dropped
         entirely).
     """
-    absolute = Path(os.path.abspath(path))
-    try:
-        return str(absolute.relative_to(os.path.abspath(root)))
-    except ValueError:
-        pass
+    if ".." not in Path(path).parts and ".." not in Path(root).parts:
+        absolute = Path(os.path.abspath(path))
+        try:
+            return str(absolute.relative_to(os.path.abspath(root)))
+        except ValueError:
+            pass
     resolved = Path(path).resolve()
     try:
         return str(resolved.relative_to(Path(root).resolve()))
