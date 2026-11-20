@@ -32,6 +32,9 @@ V1_CORE_FILE = "session.json"
 V2_CORE_FILE = "acquisition.json"
 MINIMAL_CORE_FILE = "metadata.json"
 
+# Matches the kernel's limit before it reports a symlink loop.
+MAX_SYMLINK_EXPANSIONS = 40
+
 # Ordered so the richest available document wins when more than one is present.
 _CORE_FILE_VERSIONS = (
     (V2_CORE_FILE, SCHEMA_V2),
@@ -142,14 +145,77 @@ def find_one(
     return match
 
 
+def _absolute(
+    path: Path, expansion_budget: Optional[List[int]] = None
+) -> Path:
+    """Return ``path`` made absolute, expanding only symlinks ``..`` exits.
+
+    ``os.path.abspath`` drops ``link/..`` as written, which names the wrong
+    directory when ``link`` points elsewhere. A ``..`` that exits a symlink
+    steps to the parent of the link's target; any other ``..`` drops the last
+    part as written, so every other symlink stays as named.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Path to make absolute.
+    expansion_budget : list of int, optional
+        One-element counter of symlink expansions left, shared with nested
+        calls so a cycle through ``..`` targets stays bounded. A new
+        ``MAX_SYMLINK_EXPANSIONS`` budget is used when omitted.
+
+    Returns
+    -------
+    pathlib.Path
+        Absolute path, expanded only where a ``..`` exits a symlink.
+    """
+    if expansion_budget is None:
+        expansion_budget = [MAX_SYMLINK_EXPANSIONS]
+    full = Path.cwd() / path
+    absolute = Path(full.anchor)
+    for part in full.parts[1:]:
+        if part == "..":
+            absolute = _expand_symlink(absolute, expansion_budget).parent
+        else:
+            absolute = absolute / part
+    return absolute
+
+
+def _expand_symlink(path: Path, expansion_budget: List[int]) -> Path:
+    """Replace a symlink at the end of ``path`` with its target.
+
+    A relative target is joined to the link's parent as written, so symlinks
+    earlier in ``path`` stay as named. Nested targets share the same limit of
+    ``MAX_SYMLINK_EXPANSIONS`` links, which ends a symlink cycle.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Absolute path whose last part may be a symlink.
+    expansion_budget : list of int
+        One-element counter of symlink expansions left; decremented in place.
+
+    Returns
+    -------
+    pathlib.Path
+        ``path`` with its trailing symlinks expanded.
+    """
+    while expansion_budget[0] and path.is_symlink():
+        expansion_budget[0] -= 1
+        path = _absolute(path.parent / os.readlink(path), expansion_budget)
+    return path
+
+
 def relative_to_root(root: Path, path: Path) -> str:
     """Return ``path`` relative to ``root``, as a string.
 
-    Both sides are resolved first. Inside the pipeline ``/results`` and
-    ``/data`` are symlinks into the task work directory, so comparing a
-    resolved root against an unresolved path raises ``ValueError`` and leaks
-    an absolute container path (e.g. ``/results/VISp_0/dff``) into the
-    metadata.
+    The paths are compared as written first, made absolute without following
+    symlinks other than those a ``..`` exits. A Nextflow task stages
+    its inputs as symlinks into other tasks' work directories, so resolving a
+    staged file first would place it outside the task's data root and record
+    the work directory path instead of the file's name. When that fails, both
+    sides are resolved: inside the pipeline ``/results`` and ``/data`` can
+    themselves be symlinks into the task work directory.
 
     Parameters
     ----------
@@ -165,6 +231,10 @@ def relative_to_root(root: Path, path: Path) -> str:
         it is genuinely outside ``root`` (so provenance is never dropped
         entirely).
     """
+    try:
+        return str(_absolute(path).relative_to(_absolute(root)))
+    except ValueError:
+        pass
     resolved = Path(path).resolve()
     try:
         return str(resolved.relative_to(Path(root).resolve()))
