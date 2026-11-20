@@ -1,6 +1,7 @@
 """Tests for aind_pophys_metadata.io."""
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -372,6 +373,120 @@ class TestRelativeToRoot(unittest.TestCase):
             link.symlink_to(real)
             self.assertEqual(
                 io.relative_to_root(link, real / "plane_0"), "plane_0"
+            )
+
+    def test_symlinked_entry_under_root_stays_relative(self) -> None:
+        """A staged input symlinked from elsewhere renders by its name.
+
+        Nextflow stages a task's inputs as symlinks into other tasks' work
+        directories; the record names the file under the data root, not the
+        work directory it points into.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            upstream = Path(tmp) / "work" / "ab" / "plane_0"
+            (upstream / "extraction").mkdir(parents=True)
+            data = Path(tmp) / "task" / "data"
+            data.mkdir(parents=True)
+            (data / "plane_0").symlink_to(upstream)
+            self.assertEqual(
+                io.relative_to_root(
+                    data, data / "plane_0" / "extraction" / "x.h5"
+                ),
+                str(Path("plane_0") / "extraction" / "x.h5"),
+            )
+
+    def test_task_relative_root_with_staged_symlink(self) -> None:
+        """A ``../data`` root, as a pipeline step receives it, stays relative.
+
+        The step runs from ``code/`` beside ``data/`` and globs its inputs
+        under ``../data``, so both arguments start with ``..``.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            upstream = Path(tmp) / "work" / "ab" / "plane_0"
+            (upstream / "extraction").mkdir(parents=True)
+            task = Path(tmp) / "task"
+            (task / "code").mkdir(parents=True)
+            (task / "data").mkdir()
+            (task / "data" / "plane_0").symlink_to(upstream)
+            self.addCleanup(os.chdir, os.getcwd())
+            os.chdir(task / "code")
+            self.assertEqual(
+                io.relative_to_root(
+                    Path("../data"),
+                    Path("../data/plane_0/extraction/x.h5"),
+                ),
+                str(Path("plane_0") / "extraction" / "x.h5"),
+            )
+
+    def test_parent_step_after_symlink_follows_the_link(self) -> None:
+        """``..`` after a symlink names the link target's parent.
+
+        ``data/stage/../x.h5`` with ``stage`` pointing into another directory
+        is a file beside that target, not ``data/x.h5``.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "work" / "plane_0"
+            target.mkdir(parents=True)
+            data = Path(tmp) / "data"
+            data.mkdir()
+            (data / "stage").symlink_to(target)
+            self.assertEqual(
+                io.relative_to_root(data, data / "stage" / ".." / "x.h5"),
+                str((target.parent / "x.h5").resolve()),
+            )
+
+    def test_parent_step_out_of_ordinary_directory_keeps_link(self) -> None:
+        """``..`` out of a real directory leaves an earlier symlink as named.
+
+        With ``data/plane_0`` staged as a symlink, ``extraction/..`` inside it
+        still names ``plane_0``, so the record stays relative to ``data``.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            upstream = Path(tmp) / "work" / "plane_0"
+            (upstream / "extraction").mkdir(parents=True)
+            data = Path(tmp) / "data"
+            data.mkdir()
+            (data / "plane_0").symlink_to(upstream)
+            self.assertEqual(
+                io.relative_to_root(
+                    data, data / "plane_0" / "extraction" / ".." / "x.h5"
+                ),
+                str(Path("plane_0") / "x.h5"),
+            )
+
+    def test_exited_link_keeps_earlier_staged_link(self) -> None:
+        """Exiting a nested symlink leaves the staged symlink before it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            upstream = Path(tmp) / "work" / "plane_0"
+            (upstream / "real_extraction").mkdir(parents=True)
+            (upstream / "extraction").symlink_to("real_extraction")
+            data = Path(tmp) / "data"
+            data.mkdir()
+            (data / "plane_0").symlink_to(upstream)
+            self.assertEqual(
+                io.relative_to_root(
+                    data, data / "plane_0" / "extraction" / ".." / "x.h5"
+                ),
+                str(Path("plane_0") / "x.h5"),
+            )
+
+    def test_symlink_loop_does_not_hang(self) -> None:
+        """A symlink cycle ends after a bounded number of expansions."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a").symlink_to("b")
+            (root / "b").symlink_to("a")
+            self.assertIsInstance(
+                io.relative_to_root(root, root / "a" / ".." / "x.h5"), str
+            )
+
+    def test_symlink_loop_with_parent_target_does_not_recurse(self) -> None:
+        """A cycle whose target contains ``..`` shares the expansion limit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a").symlink_to("a/../target")
+            self.assertIsInstance(
+                io.relative_to_root(root, root / "a" / ".." / "x.h5"), str
             )
 
 
